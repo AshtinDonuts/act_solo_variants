@@ -9,6 +9,8 @@ from aloha.robot_utils import (
     FOLLOWER_GRIPPER_JOINT_OPEN
 )
 from einops import rearrange
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to prevent display windows
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
