@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import os
 import h5py
+import re
 from torch.utils.data import TensorDataset, DataLoader
 
 
@@ -86,17 +87,23 @@ class EpisodicDataset(torch.utils.data.Dataset):
         return image_data, qpos_data, action_data, is_pad
 
 
-def get_norm_stats(dataset_dir, num_episodes):
+def get_norm_stats(dataset_dir, episode_indices):
     all_qpos_data = []
     all_action_data = []
-    for episode_idx in range(num_episodes):
+    for episode_idx in episode_indices:
         dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
+        if not os.path.exists(dataset_path):
+            # allow gaps in episode numbering without crashing
+            print(f'Warning: missing {dataset_path}, skipping')
+            continue
         with h5py.File(dataset_path, 'r') as root:
             qpos = root['/observations/qpos'][()]
             qvel = root['/observations/qvel'][()]
             action = root['/action'][()]
         all_qpos_data.append(torch.from_numpy(qpos))
         all_action_data.append(torch.from_numpy(action))
+    if len(all_qpos_data) == 0 or len(all_action_data) == 0:
+        raise ValueError(f'No episodes found in {dataset_dir} (checked indices {episode_indices})')
     all_qpos_data = torch.stack(all_qpos_data)
     all_action_data = torch.stack(all_action_data)
     all_action_data = all_action_data
@@ -119,6 +126,7 @@ def get_norm_stats(dataset_dir, num_episodes):
         "example_qpos": qpos,
     }
 
+    print('\nFinished computing norm stats !!\n')
     return stats
 
 
@@ -141,18 +149,26 @@ def load_data(dataset_dir, camera_names, batch_size_train, batch_size_val, skip_
     # verify that the directory passed is a string
     if isinstance(dataset_dir, str):
         # get all the episodes from the directory.
-        dataset_path_list_list = [find_all_hdf5(dataset_dir, skip_mirrored_data)]
-        # get the length of the list. Store it as number of episodes.
-        num_episodes = len(dataset_path_list_list[0])
+        dataset_paths = find_all_hdf5(dataset_dir, skip_mirrored_data)
+        # extract episode ids from filenames (episode_<id>.hdf5)
+        episode_indices = []
+        for path in dataset_paths:
+            match = re.search(r'episode_(\d+)\.hdf5$', os.path.basename(path))
+            if match:
+                episode_indices.append(int(match.group(1)))
+        episode_indices = sorted(set(episode_indices))
+        if len(episode_indices) == 0:
+            raise ValueError(f'No episode_*.hdf5 files found in {dataset_dir}')
+        num_episodes = len(episode_indices)
 
     # obtain train test split
     train_ratio = 0.8
-    shuffled_indices = np.random.permutation(num_episodes)
+    shuffled_indices = np.random.permutation(episode_indices)
     train_indices = shuffled_indices[:int(train_ratio * num_episodes)]
     val_indices = shuffled_indices[int(train_ratio * num_episodes):]
 
     # obtain normalization stats for qpos and action
-    norm_stats = get_norm_stats(dataset_dir, num_episodes)
+    norm_stats = get_norm_stats(dataset_dir, episode_indices)
 
     # construct dataset and dataloader
     train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
