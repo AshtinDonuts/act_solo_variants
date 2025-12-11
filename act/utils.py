@@ -90,6 +90,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 def get_norm_stats(dataset_dir, episode_indices):
     all_qpos_data = []
     all_action_data = []
+    all_effort_data = []
     for episode_idx in episode_indices:
         dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
         if not os.path.exists(dataset_path):
@@ -98,15 +99,18 @@ def get_norm_stats(dataset_dir, episode_indices):
             continue
         with h5py.File(dataset_path, 'r') as root:
             qpos = root['/observations/qpos'][()]
-            qvel = root['/observations/qvel'][()]
+            # qvel = root['/observations/qvel'][()]   # unused
             action = root['/action'][()]
+            effort = root['/observations/effort'][()]
         all_qpos_data.append(torch.from_numpy(qpos))
         all_action_data.append(torch.from_numpy(action))
+        all_effort_data.append(torch.from_numpy(effort))
     if len(all_qpos_data) == 0 or len(all_action_data) == 0:
         raise ValueError(f'No episodes found in {dataset_dir} (checked indices {episode_indices})')
     all_qpos_data = torch.stack(all_qpos_data)
     all_action_data = torch.stack(all_action_data)
-    all_action_data = all_action_data
+    if len(all_effort_data) > 0:
+        all_effort_data = torch.stack(all_effort_data)
 
     # normalize action data
     action_mean = all_action_data.mean(dim=[0, 1], keepdim=True)
@@ -118,6 +122,11 @@ def get_norm_stats(dataset_dir, episode_indices):
     qpos_std = all_qpos_data.std(dim=[0, 1], keepdim=True)
     qpos_std = torch.clip(qpos_std, 1e-2, np.inf) # clipping
 
+    # normalize effort data
+    effort_mean = all_effort_data.mean(dim=[0, 1], keepdim=True)
+    effort_std = all_effort_data.std(dim=[0, 1], keepdim=True)
+    effort_std = torch.clip(effort_std, 1e-2, np.inf)
+
     stats = {
         "action_mean": action_mean.numpy().squeeze(),
         "action_std": action_std.numpy().squeeze(),
@@ -125,6 +134,16 @@ def get_norm_stats(dataset_dir, episode_indices):
         "qpos_std": qpos_std.numpy().squeeze(),
         "example_qpos": qpos,
     }
+
+    ## Add effort into stats dict
+    if effort_mean is not None and effort_std is not None:
+        stats["effort_mean"] = effort_mean.numpy().squeeze()
+        stats["effort_std"] = effort_std.numpy().squeeze()
+        stats["example_effort"] = effort
+    else:
+        stats["effort_mean"] = None
+        stats["effort_std"] = None
+        stats["example_effort"] = None
 
     print('\nFinished computing norm stats !!\n')
     return stats
