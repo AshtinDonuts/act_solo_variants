@@ -68,6 +68,7 @@ class DETRVAE(nn.Module):
         self.cls_embed = nn.Embedding(1, hidden_dim) # extra cls token embedding
         self.encoder_action_proj = nn.Linear(7, hidden_dim) # project action to embedding
         self.encoder_joint_proj = nn.Linear(7, hidden_dim)  # project qpos to embedding
+        self.encoder_effort_proj = nn.Linear(7,hidden_dim)   ## NOTE: Project since other 2 also project
         self.latent_proj = nn.Linear(hidden_dim, self.latent_dim*2) # project hidden state to latent std, var
         # [CLS], qpos, effort, a_seq
         self.register_buffer('pos_table', get_sinusoid_encoding_table(1+2+num_queries, hidden_dim))

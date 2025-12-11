@@ -429,7 +429,7 @@ def forward_pass(data, policy):
     action_data = action_data.cuda()
     is_pad = is_pad.cuda()
     effort_data = effort_data.cuda()
-    return policy(qpos_data, image_data, action_data, is_pad)   # TODO: effort_data currently unused in policy
+    return policy(qpos_data, image_data, effort_data, action_data, is_pad)
 
 
 def train_bc(train_dataloader, val_dataloader, config):
