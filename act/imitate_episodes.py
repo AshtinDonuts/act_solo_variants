@@ -328,16 +328,21 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     image_list.append(obs['images'])
                 else:
                     image_list.append({'main': obs['image']})
+                
+                # preprocess qpos, effort before passing into policy
                 qpos_numpy = np.array(obs['qpos'])
                 qpos = pre_process(qpos_numpy)
                 qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                # qpos_history[:, t] = qpos
+                effort_np = np.array(obs['effort'])
+                effort = pre_process(effort_np)
+                effort = torch.from_numpy(effort).float().cuda().unsqueeze(0)
+
                 curr_image = get_image(ts, camera_names)
 
                 ### query policy
                 if config['policy_class'] == "ACT":
                     if t % query_frequency == 0:
-                        all_actions = policy(qpos, curr_image, effort)  ## TODO: pass EFFORT as input
+                        all_actions = policy(qpos, curr_image, effort)
                     if temporal_agg:
                         all_time_actions[[t], t:t+num_queries] = all_actions
                         actions_for_curr_step = all_time_actions[:, t]
@@ -364,15 +369,11 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     # ts = env.step(target_qpos.astype(float).tolist())
                     ts = env.step(target_qpos.astype(float).tolist(), debug=True)
 
-                    ### for visualization
-                    #  This script itself doesn't have visualization.
-                    #  
-                    qpos_list.append(qpos_numpy)
-                    target_qpos_list.append(target_qpos)
-                    rewards.append(ts.reward)
-                    
-                    # Save incrementally every timestep
-                    save_qpos_data()
+                ### for visualization
+                qpos_list.append(qpos_numpy)
+                target_qpos_list.append(target_qpos)
+                rewards.append(ts.reward)
+                effort_list.append(effort_np)
 
             plt.close()
         except KeyboardInterrupt:
