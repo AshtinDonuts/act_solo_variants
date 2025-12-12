@@ -299,9 +299,10 @@ def eval_bc(config, ckpt_name, save_episode=True):
         if temporal_agg:
             all_time_actions = torch.zeros([max_timesteps, max_timesteps+num_queries, state_dim]).cuda()
 
-        qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
+        # qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
         image_list = [] # for visualization
         qpos_list = []
+        effort_list = []   ## Dec 12
         target_qpos_list = []
         rewards = []
         qpos_data_path = os.path.join(ckpt_dir, f'qpos_{rollout_id}.pkl')
@@ -321,40 +322,38 @@ def eval_bc(config, ckpt_name, save_episode=True):
                         plt_img.set_data(image)
                         plt.pause(dt)
 
-                    ### process previous timestep to get qpos and image_list
-                    obs = ts.observation
-                    if 'images' in obs:
-                        image_list.append(obs['images'])
-                    else:
-                        image_list.append({'main': obs['image']})
-                    qpos_numpy = np.array(obs['qpos'])
-                    qpos = pre_process(qpos_numpy)
-                    qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                    qpos_history[:, t] = qpos
-                    ## Skip the left shoulder camera camera JAN8
-                    # camera_names = [camera for camera in camera_names if camera != 'left_shoulder_camera']
-                    curr_image = get_image(ts, camera_names)
+                ### process previous timestep to get qpos and image_list
+                obs = ts.observation
+                if 'images' in obs:
+                    image_list.append(obs['images'])
+                else:
+                    image_list.append({'main': obs['image']})
+                qpos_numpy = np.array(obs['qpos'])
+                qpos = pre_process(qpos_numpy)
+                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
+                # qpos_history[:, t] = qpos
+                curr_image = get_image(ts, camera_names)
 
-                    ### query policy
-                    if config['policy_class'] == "ACT":
-                        if t % query_frequency == 0:
-                            all_actions = policy(qpos, curr_image)
-                        if temporal_agg:
-                            all_time_actions[[t], t:t+num_queries] = all_actions
-                            actions_for_curr_step = all_time_actions[:, t]
-                            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                            actions_for_curr_step = actions_for_curr_step[actions_populated]
-                            k = 0.01
-                            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                            exp_weights = exp_weights / exp_weights.sum()
-                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                        else:
-                            raw_action = all_actions[:, t % query_frequency]
-                    elif config['policy_class'] == "CNNMLP":
-                        raw_action = policy(qpos, curr_image)
+                ### query policy
+                if config['policy_class'] == "ACT":
+                    if t % query_frequency == 0:
+                        all_actions = policy(qpos, curr_image, effort)  ## TODO: pass EFFORT as input
+                    if temporal_agg:
+                        all_time_actions[[t], t:t+num_queries] = all_actions
+                        actions_for_curr_step = all_time_actions[:, t]
+                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                        actions_for_curr_step = actions_for_curr_step[actions_populated]
+                        k = 0.01
+                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                        exp_weights = exp_weights / exp_weights.sum()
+                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
                     else:
-                        raise NotImplementedError
+                        raw_action = all_actions[:, t % query_frequency]
+                elif config['policy_class'] == "CNNMLP":
+                    raw_action = policy(qpos, curr_image)
+                else:
+                    raise NotImplementedError
 
                     ### post-process actions
                     raw_action = raw_action.squeeze(0).cpu().numpy()
