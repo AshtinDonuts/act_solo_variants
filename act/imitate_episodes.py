@@ -351,6 +351,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
         if save_episode:
             save_videos(image_list, dt, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))
+            qpos_data_path = os.path.join(ckpt_dir, f'qpos_{rollout_id}.pkl')
+            with open(qpos_data_path, 'wb') as f:
+                pickle.dump({'qpos': qpos_list, 'target_qpos': target_qpos_list, 'rewards': rewards}, f)
 
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
     avg_return = np.mean(episode_returns)
