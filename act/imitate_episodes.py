@@ -233,6 +233,19 @@ def eval_bc(config, ckpt_name, save_episode=True):
             robot_startup(node)
         except InterbotixException:
             pass
+        
+        # Manual gripper setup for all follower robots (since setup_robots=False)
+        # This is required for gripper commands to work correctly
+        for name, bot in env.robots.items():
+            if 'follower' in name:
+                print(f"Setting up gripper for {name}...")
+                bot.core.robot_reboot_motors('single', 'gripper', True)
+                bot.core.robot_set_operating_modes('group', 'arm', 'position')
+                bot.core.robot_set_operating_modes('single', 'gripper', 'current_based_position')
+                bot.core.robot_set_motor_registers('single', 'gripper', 'current_limit', 300)
+                bot.core.robot_torque_enable('group', 'arm', True)
+                bot.core.robot_torque_enable('single', 'gripper', True)
+        
         env_max_reward = 0
     else:
         from sim_env import make_sim_env
@@ -275,63 +288,80 @@ def eval_bc(config, ckpt_name, save_episode=True):
         qpos_list = []
         target_qpos_list = []
         rewards = []
-        with torch.inference_mode():
-            for t in range(max_timesteps):
-                ### update onscreen render and wait for DT
-                if onscreen_render:
-                    image = env._physics.render(height=480, width=640, camera_id=onscreen_cam)
-                    plt_img.set_data(image)
-                    plt.pause(dt)
+        qpos_data_path = os.path.join(ckpt_dir, f'qpos_{rollout_id}.pkl')
+        
+        def save_qpos_data():
+            """Helper function to save qpos data incrementally"""
+            if save_episode:
+                with open(qpos_data_path, 'wb') as f:
+                    pickle.dump({'qpos': qpos_list, 'target_qpos': target_qpos_list, 'rewards': rewards}, f)
+        
+        try:
+            with torch.inference_mode():
+                for t in range(max_timesteps):
+                    ### update onscreen render and wait for DT
+                    if onscreen_render:
+                        image = env._physics.render(height=480, width=640, camera_id=onscreen_cam)
+                        plt_img.set_data(image)
+                        plt.pause(dt)
 
-                ### process previous timestep to get qpos and image_list
-                obs = ts.observation
-                if 'images' in obs:
-                    image_list.append(obs['images'])
-                else:
-                    image_list.append({'main': obs['image']})
-                qpos_numpy = np.array(obs['qpos'])
-                qpos = pre_process(qpos_numpy)
-                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                qpos_history[:, t] = qpos
-                curr_image = get_image(ts, camera_names)
-
-                ### query policy
-                if config['policy_class'] == "ACT":
-                    if t % query_frequency == 0:
-                        all_actions = policy(qpos, curr_image)
-                    if temporal_agg:
-                        all_time_actions[[t], t:t+num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
-                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                    ### process previous timestep to get qpos and image_list
+                    obs = ts.observation
+                    if 'images' in obs:
+                        image_list.append(obs['images'])
                     else:
-                        raw_action = all_actions[:, t % query_frequency]
-                elif config['policy_class'] == "CNNMLP":
-                    raw_action = policy(qpos, curr_image)
-                else:
-                    raise NotImplementedError
+                        image_list.append({'main': obs['image']})
+                    qpos_numpy = np.array(obs['qpos'])
+                    qpos = pre_process(qpos_numpy)
+                    qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
+                    qpos_history[:, t] = qpos
+                    curr_image = get_image(ts, camera_names)
 
-                ### post-process actions
-                raw_action = raw_action.squeeze(0).cpu().numpy()
-                action = post_process(raw_action)
-                target_qpos = action
+                    ### query policy
+                    if config['policy_class'] == "ACT":
+                        if t % query_frequency == 0:
+                            all_actions = policy(qpos, curr_image)
+                        if temporal_agg:
+                            all_time_actions[[t], t:t+num_queries] = all_actions
+                            actions_for_curr_step = all_time_actions[:, t]
+                            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                            actions_for_curr_step = actions_for_curr_step[actions_populated]
+                            k = 0.01
+                            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                            exp_weights = exp_weights / exp_weights.sum()
+                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        else:
+                            raw_action = all_actions[:, t % query_frequency]
+                    elif config['policy_class'] == "CNNMLP":
+                        raw_action = policy(qpos, curr_image)
+                    else:
+                        raise NotImplementedError
 
-                ### step the environment
-                ts = env.step(target_qpos.astype(float).tolist())
+                    ### post-process actions
+                    raw_action = raw_action.squeeze(0).cpu().numpy()
+                    action = post_process(raw_action)
+                    target_qpos = action
 
-                ### for visualization
-                #  This script itself doesn't have visualization.
-                #  
-                qpos_list.append(qpos_numpy)
-                target_qpos_list.append(target_qpos)
-                rewards.append(ts.reward)
+                    ### step the environment
+                    # ts = env.step(target_qpos.astype(float).tolist())
+                    ts = env.step(target_qpos.astype(float).tolist(), debug=True)
+
+                    ### for visualization
+                    #  This script itself doesn't have visualization.
+                    #  
+                    qpos_list.append(qpos_numpy)
+                    target_qpos_list.append(target_qpos)
+                    rewards.append(ts.reward)
+                    
+                    # Save incrementally every timestep
+                    save_qpos_data()
 
             plt.close()
+        except KeyboardInterrupt:
+            print(f"\nInterrupted at timestep {len(qpos_list)}/{max_timesteps}. Saving collected data...")
+            save_qpos_data()
+            raise
         if real_robot:
             # open
             move_grippers(
