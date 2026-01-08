@@ -65,7 +65,8 @@ def main(args):
     dataset_dir = os.path.expanduser(task_config.get('dataset_dir'))
     episode_len = task_config.get('episode_len')
 
-    camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances')]
+    # camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances')]
+    camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances') if camera['name'] != 'left_shoulder_camera']
 
     # fixed parameters
     state_dim = 7
@@ -117,7 +118,8 @@ def main(args):
     }
 
     if is_eval:
-        ckpt_names = ['policy_best.ckpt']
+        # ckpt_names = ['policy_best.ckpt']
+        ckpt_names = ['policy_epoch_3500_seed_0.ckpt'] ##
         results = []
         for ckpt_name in ckpt_names:
             success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=True)
@@ -323,6 +325,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 ts = env.step(target_qpos.astype(float).tolist())
 
                 ### for visualization
+                #  This script itself doesn't have visualization.
+                #  
                 qpos_list.append(qpos_numpy)
                 target_qpos_list.append(target_qpos)
                 rewards.append(ts.reward)
@@ -433,12 +437,13 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        if epoch % 100 == 0:
+        if epoch % 500 == 0:
             ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
             torch.save(policy.state_dict(), ckpt_path)
+        if epoch % 100 == 0:
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
 
-    ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')  ## DO NOT CHANGE THIS ONE
     torch.save(policy.state_dict(), ckpt_path)
 
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
