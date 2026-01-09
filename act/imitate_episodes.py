@@ -65,8 +65,8 @@ def main(args):
     dataset_dir = os.path.expanduser(task_config.get('dataset_dir'))
     episode_len = task_config.get('episode_len')
 
-    # camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances')]
-    camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances') if camera['name'] != 'left_shoulder_camera']
+    camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances')]
+    # camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances') if camera['name'] != 'left_shoulder_camera']
 
     # fixed parameters
     state_dim = 7
@@ -315,6 +315,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     qpos = pre_process(qpos_numpy)
                     qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                     qpos_history[:, t] = qpos
+                    ## Skip the left shoulder camera camera JAN8
+                    # camera_names = [camera for camera in camera_names if camera != 'left_shoulder_camera']
                     curr_image = get_image(ts, camera_names)
 
                     ### query policy
