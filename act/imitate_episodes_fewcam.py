@@ -48,7 +48,6 @@ def main(args):
     num_epochs = args['num_epochs']
     robot = args['robot']
 
-
     base_path = os.path.expanduser("~/interbotix_ws/src/aloha/config")
 
     robot_config = load_yaml_file("robot", robot, base_path=base_path).get('robot')
@@ -65,8 +64,8 @@ def main(args):
     dataset_dir = os.path.expanduser(task_config.get('dataset_dir'))
     episode_len = task_config.get('episode_len')
 
-    camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances')]
-    # camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances') if camera['name'] != 'left_shoulder_camera']
+    ##
+    camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances') if camera['name'] != 'camera_right_shoulder']
 
     # fixed parameters
     state_dim = 7
@@ -99,6 +98,9 @@ def main(args):
         }
     else:
         raise NotImplementedError("policy_class must be one of 'ACT' or 'CNNMLP'.")
+
+    ##  Consolidate the all changes to the configurations above
+    ##  Iow Config parameters AFTER this line is not supposed to be modified.
 
     config = {
         'num_epochs': num_epochs,
@@ -528,6 +530,6 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
-    argument = vars(parser.parse_args())
 
-    main(vars(parser.parse_args()))
+    argument = vars(parser.parse_args())
+    main(argument)
