@@ -1,3 +1,5 @@
+act/ckpt/
+
 bin
 logs
 wandb
