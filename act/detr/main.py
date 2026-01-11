@@ -64,6 +64,7 @@ def get_args_parser():
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
+    parser.add_argument('--exclude_cameras', action='store', type=str, nargs='+', help='Camera names to exclude (e.g., camera_right_shoulder)', required=False)
 
     return parser
 

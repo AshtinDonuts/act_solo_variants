@@ -65,8 +65,19 @@ def main(args):
     dataset_dir = os.path.expanduser(task_config.get('dataset_dir'))
     episode_len = task_config.get('episode_len')
 
-    camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances')]
-    # camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances') if camera['name'] != 'left_shoulder_camera']
+    # Camera filtering: exclude cameras specified in args['exclude_cameras'] if provided
+    all_camera_names = [camera['name'] for camera in robot_config.get('cameras').get('camera_instances')]
+    exclude_cameras = args.get('exclude_cameras', [])
+    if exclude_cameras:
+        if isinstance(exclude_cameras, str):
+            exclude_cameras = [exclude_cameras]
+        # Check if all exclude_cameras exist in all_camera_names
+        for cam in exclude_cameras:
+            if cam not in all_camera_names:
+                raise ValueError(f"Camera to exclude '{cam}' not found in available camera names: {all_camera_names}")
+        camera_names = [name for name in all_camera_names if name not in exclude_cameras]
+    else:
+        camera_names = all_camera_names
 
     # fixed parameters
     state_dim = 7
@@ -99,6 +110,9 @@ def main(args):
         }
     else:
         raise NotImplementedError("policy_class must be one of 'ACT' or 'CNNMLP'.")
+
+    ##  Consolidate the all changes to the configurations above
+    ##  Iow Config parameters AFTER this line is not supposed to be modified.
 
     config = {
         'num_epochs': num_epochs,
@@ -528,6 +542,7 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
-    argument = vars(parser.parse_args())
+    parser.add_argument('--exclude_cameras', action='store', type=str, nargs='+', help='Camera names to exclude (e.g., camera_right_shoulder)', required=False)
 
-    main(vars(parser.parse_args()))
+    argument = vars(parser.parse_args())
+    main(argument)
