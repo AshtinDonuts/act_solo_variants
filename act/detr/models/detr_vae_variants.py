@@ -5,7 +5,7 @@ DETR model and criterion classes.
 import torch
 from torch import nn
 from .backbone import build_backbone
-from .transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
+from .transformer_variants import build_transformer, TransformerEncoder, TransformerEncoderLayer
 from .detr_vae import (
     DETRVAE as BaseDETRVAE, 
     get_sinusoid_encoding_table, 
@@ -40,6 +40,8 @@ class DETRVAE_ID01(BaseDETRVAE):
         hidden_dim = transformer.d_model
         self.encoder_effort_proj = nn.Linear(self.torque_dim, hidden_dim)
         self.input_proj_robot_torque = nn.Linear(self.torque_dim, hidden_dim)
+
+        self.additional_pos_embed = nn.Embedding(3, hidden_dim) # learned position embedding for proprio + effort + latent
         
         # Override position table to include effort: [CLS], qpos, effort, a_seq
         self.register_buffer('pos_table', get_sinusoid_encoding_table(1 + 1 + 1 + num_queries, hidden_dim))
@@ -57,6 +59,10 @@ class DETRVAE_ID01(BaseDETRVAE):
 
         #  This below if-else block is for learning Z-style variable (train only)
         #  Obtain latent z from action sequence
+        
+        preprocess_effort = lambda effort: effort[:, :self.torque_dim]
+        effort = preprocess_effort(effort)
+
         if is_training:
             # project action sequence to embedding dim, and concat with a CLS token
             action_embed = self.encoder_action_proj(actions)        # (bs, seq, hidden_dim)
@@ -101,11 +107,11 @@ class DETRVAE_ID01(BaseDETRVAE):
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos)
             # torque input features
-            tau_input = self.input_proj_robot_torque(effort)
+            effort_input = self.input_proj_robot_torque(effort)
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
-            hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, tau_input, self.additional_pos_embed.weight)[0]
+            hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, effort_input, self.additional_pos_embed.weight)[0] ##
         else:
             qpos = self.input_proj_robot_state(qpos)
             env_state = self.input_proj_env_state(env_state)
