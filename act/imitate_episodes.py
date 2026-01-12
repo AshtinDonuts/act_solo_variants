@@ -49,6 +49,7 @@ def main(args):
     batch_size_val = args['batch_size']
     num_epochs = args['num_epochs']
     robot = args['robot']
+    experiment_id = args.get('experiment_id', None)
 
 
     base_path = os.path.expanduser("~/interbotix_ws/src/aloha/config")
@@ -82,6 +83,7 @@ def main(args):
         camera_names = all_camera_names
 
     # fixed parameters
+    # policy_config key-vals are passed to build the DETR_VAE instance
     state_dim = 7
     lr_backbone = 1e-5
     backbone = 'resnet18'
@@ -113,8 +115,13 @@ def main(args):
     else:
         raise NotImplementedError("policy_class must be one of 'ACT' or 'CNNMLP'.")
 
-    ##  Consolidate the all changes to the configurations above
-    ##  Iow Config parameters AFTER this line is not supposed to be modified.
+    ##  TORQUE CONFIGS
+    if policy_class == 'ACT':
+        if experiment_id == 'id01':
+            policy_config['torque_dim'] = 6
+
+    ##  Consolidate the all changes to the configurations above PRIOR TO THIS BLOCK.
+    ##  Config AFTER this line should NOT BE modified.
 
     config = {
         'num_epochs': num_epochs,
@@ -302,7 +309,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
         # qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
         image_list = [] # for visualization
         qpos_list = []
-        effort_list = []   ## Dec 12
+        effort_list = []   ##
         target_qpos_list = []
         rewards = []
         qpos_data_path = os.path.join(ckpt_dir, f'qpos_{rollout_id}.pkl')
@@ -322,43 +329,43 @@ def eval_bc(config, ckpt_name, save_episode=True):
                         plt_img.set_data(image)
                         plt.pause(dt)
 
-                ### process previous timestep to get qpos and image_list
-                obs = ts.observation
-                if 'images' in obs:
-                    image_list.append(obs['images'])
-                else:
-                    image_list.append({'main': obs['image']})
-                
-                # preprocess qpos, effort before passing into policy
-                qpos_numpy = np.array(obs['qpos'])
-                qpos = pre_process(qpos_numpy)
-                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                effort_np = np.array(obs['effort'])
-                effort = pre_process(effort_np)
-                effort = torch.from_numpy(effort).float().cuda().unsqueeze(0)
-
-                curr_image = get_image(ts, camera_names)
-
-                ### query policy
-                if config['policy_class'] == "ACT":
-                    if t % query_frequency == 0:
-                        all_actions = policy(qpos, curr_image, effort)
-                    if temporal_agg:
-                        all_time_actions[[t], t:t+num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
-                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                    ### process previous timestep to get qpos and image_list
+                    obs = ts.observation
+                    if 'images' in obs:
+                        image_list.append(obs['images'])
                     else:
-                        raw_action = all_actions[:, t % query_frequency]
-                elif config['policy_class'] == "CNNMLP":
-                    raw_action = policy(qpos, curr_image)
-                else:
-                    raise NotImplementedError
+                        image_list.append({'main': obs['image']})
+                    
+                    # preprocess qpos, effort before passing into policy
+                    qpos_numpy = np.array(obs['qpos'])
+                    qpos = pre_process(qpos_numpy)
+                    qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
+                    effort_np = np.array(obs['effort'])
+                    effort = pre_process(effort_np)
+                    effort = torch.from_numpy(effort).float().cuda().unsqueeze(0)
+
+                    curr_image = get_image(ts, camera_names)
+
+                    # query policy
+                    if config['policy_class'] == "ACT":
+                        if t % query_frequency == 0:
+                            all_actions = policy(qpos, curr_image, effort)
+                        if temporal_agg:
+                            all_time_actions[[t], t:t+num_queries] = all_actions
+                            actions_for_curr_step = all_time_actions[:, t]
+                            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                            actions_for_curr_step = actions_for_curr_step[actions_populated]
+                            k = 0.01
+                            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                            exp_weights = exp_weights / exp_weights.sum()
+                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        else:
+                            raw_action = all_actions[:, t % query_frequency]
+                    elif config['policy_class'] == "CNNMLP":
+                        raw_action = policy(qpos, curr_image)
+                    else:
+                        raise NotImplementedError
 
                     ### post-process actions
                     raw_action = raw_action.squeeze(0).cpu().numpy()
@@ -369,11 +376,12 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     # ts = env.step(target_qpos.astype(float).tolist())
                     ts = env.step(target_qpos.astype(float).tolist(), debug=True)
 
-                ### for visualization
-                qpos_list.append(qpos_numpy)
-                target_qpos_list.append(target_qpos)
-                rewards.append(ts.reward)
-                effort_list.append(effort_np)
+                    ### for visualization
+                    qpos_list.append(qpos_numpy)
+                    target_qpos = action
+                    target_qpos_list.append(target_qpos)
+                    rewards.append(ts.reward)
+                    effort_list.append(effort_np)
 
             plt.close()
         except KeyboardInterrupt:
@@ -549,6 +557,7 @@ if __name__ == '__main__':
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
     parser.add_argument('--exclude_cameras', action='store', type=str, nargs='+', help='Camera names to exclude (e.g., camera_right_shoulder)', required=False)
+    parser.add_argument('--experiment_id', action='store', type=str, help='experiment_id', required=False)
 
     argument = vars(parser.parse_args())
     main(argument)
