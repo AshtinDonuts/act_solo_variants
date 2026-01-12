@@ -117,7 +117,8 @@ def main(args):
 
     ##  TORQUE CONFIGS
     if policy_class == 'ACT':
-        if experiment_id == 'id01':
+        if experiment_id == 'ID01':
+            policy_config['experiment_id'] = experiment_id
             policy_config['torque_dim'] = 6
 
     ##  Consolidate the all changes to the configurations above PRIOR TO THIS BLOCK.
@@ -557,6 +558,8 @@ if __name__ == '__main__':
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
     parser.add_argument('--exclude_cameras', action='store', type=str, nargs='+', help='Camera names to exclude (e.g., camera_right_shoulder)', required=False)
+
+    # for ACT variants
     parser.add_argument('--experiment_id', action='store', type=str, help='experiment_id', required=False)
 
     argument = vars(parser.parse_args())

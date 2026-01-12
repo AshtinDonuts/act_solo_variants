@@ -22,7 +22,7 @@ class ACTPolicy(nn.Module):
                                          std=[0.229, 0.224, 0.225])
         image = normalize(image)
         if actions is not None: # training time
-            actions = actions[:, :self.model.num_queries]  ## Q : why does model set num_queries?
+            actions = actions[:, :self.model.num_queries]  ## Q : why this design? How many actions are generated?
             is_pad = is_pad[:, :self.model.num_queries]
 
             a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, effort, env_state, actions, is_pad)
@@ -44,6 +44,7 @@ class ACTPolicy(nn.Module):
 
 class CNNMLPPolicy(nn.Module):
     def __init__(self, args_override):
+        raise NotImplementedError
         super().__init__()
         model, optimizer = build_CNNMLP_model_and_optimizer(args_override)
         self.model = model # decoder
