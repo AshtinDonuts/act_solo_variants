@@ -87,6 +87,11 @@ class IACT_B_Policy(nn.Module):
             is_pad = is_pad[:, :self.model.num_queries]
 
             # Forward through model: outputs both q_ref and primitives
+            # We rename a_hat to q_ref because this is a joint equilibrium \
+            # within the context of Impedance control \
+            # # though... we are aiminig towards Cartesian Impedance, so this is just \
+            # though... we are aiming towards Cartesian Impedance, so this is just \
+            # an intermediate processing step
             q_ref, primitive_logits, primitive_params_pred, is_pad_hat, (mu, logvar) = self.model(
                 qpos, image, effort, env_state, actions, is_pad
             )
@@ -101,6 +106,7 @@ class IACT_B_Policy(nn.Module):
             loss_dict['l1'] = l1
             
             # L_prim: cross-entropy on z (primitive classification)
+            # GT labels generated from the data_labeling.py
             if primitive_labels is not None:
                 # Ground truth primitive labels provided
                 primitive_labels = primitive_labels[:, :self.model.num_queries]
@@ -215,10 +221,12 @@ class IACT_B_Policy(nn.Module):
         # Use the first query's primitive (or take argmax)
         # In practice, you might want to use temporal aggregation
         primitive_probs = F.softmax(primitive_logits[0], dim=-1)
-        primitive_id = torch.argmax(primitive_probs).item()
+        # primitive_id = torch.argmax(primitive_probs).item()
+        primitive_id = torch.argmax(primitive_probs[0]).item()
         
         # Get primitive parameters
-        params_np = primitive_params[0].detach().cpu().numpy()
+        # params_np = primitive_params[0].detach().cpu().numpy()
+        params_np = primitive_params[0][0].detach().cpu().numpy()
         
         # Update PrimitiveExecutor
         self.primitive_executor.update_primitive(primitive_id, params_np)

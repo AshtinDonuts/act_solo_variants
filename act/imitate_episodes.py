@@ -21,9 +21,11 @@ from policy import (
     ACTPolicy,
     CNNMLPPolicy,
 )
-from sim_scripts.sim_env import (
-    BOX_POSE,
-)
+from IACT_B.policy import IACT_B_Policy
+# from sim_scripts.sim_env import (
+#     BOX_POSE,
+# )
+BOX_POSE=None
 from utils import (
     compute_dict_mean,
     detach_dict,
@@ -110,14 +112,32 @@ def main(args):
             'num_queries': 1,
             'camera_names': camera_names,
         }
+    elif policy_class == 'IACT_B':
+        enc_layers = 4
+        dec_layers = 7
+        nheads = 8
+        policy_config = {
+            'lr': args['lr'],
+            'num_queries': args['chunk_size'],
+            'kl_weight': args['kl_weight'],
+            'hidden_dim': args['hidden_dim'],
+            'dim_feedforward': args['dim_feedforward'],
+            'lr_backbone': lr_backbone,
+            'backbone': backbone,
+            'enc_layers': enc_layers,
+            'dec_layers': dec_layers,
+            'nheads': nheads,
+            'camera_names': camera_names,
+            'num_primitives': args.get('num_primitives', 6),
+            'primitive_param_dim': args.get('primitive_param_dim', 8),
+        }
     else:
-        raise NotImplementedError("policy_class must be one of 'ACT' or 'CNNMLP'.")
+        raise NotImplementedError("policy_class must be one of 'ACT', 'CNNMLP', or 'IACT_B'.")
 
     ##  TORQUE CONFIGS
-    if policy_class == 'ACT':
-        if experiment_id == 'ID01':
-            policy_config['experiment_id'] = experiment_id
-            policy_config['torque_dim'] = 6
+    if experiment_id == 'ID01':
+        policy_config['experiment_id'] = experiment_id
+        policy_config['torque_dim'] = 6
 
     ##  Consolidate the all changes to the configurations above PRIOR TO THIS BLOCK.
     ##  Config AFTER this line should NOT BE modified.
@@ -180,6 +200,8 @@ def make_policy(policy_class, policy_config):
         policy = ACTPolicy(policy_config)
     elif policy_class == 'CNNMLP':
         policy = CNNMLPPolicy(policy_config)
+    elif policy_class == 'IACT_B':
+        policy = IACT_B_Policy(policy_config)
     else:
         raise NotImplementedError
     return policy
@@ -189,6 +211,8 @@ def make_optimizer(policy_class, policy):
     if policy_class == 'ACT':
         optimizer = policy.configure_optimizers()
     elif policy_class == 'CNNMLP':
+        optimizer = policy.configure_optimizers()
+    elif policy_class == 'IACT_B':
         optimizer = policy.configure_optimizers()
     else:
         raise NotImplementedError
@@ -336,6 +360,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     
                     # preprocess qpos, effort before passing into policy
                     qpos_numpy = np.array(obs['qpos'])
+                    qvel_numpy = np.array(obs.get('qvel', np.zeros_like(qpos_numpy)))
                     qpos = pre_process(qpos_numpy)
                     qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                     effort_np = np.array(obs['effort'])
@@ -362,6 +387,45 @@ def eval_bc(config, ckpt_name, save_episode=True):
                             raw_action = all_actions[:, t % query_frequency]
                     elif config['policy_class'] == "CNNMLP":
                         raw_action = policy(qpos, curr_image)
+                    
+                    # NOTE
+                    # Experimental for Impedance ACT type B
+                    elif config['policy_class'] == 'IACT_B':
+                        if t % query_frequency == 0:
+                            policy_output = policy(qpos, curr_image, effort)
+                            all_q_ref = policy_output['q_ref']
+                            # For IACT_B, we also need primitive info
+                            primitive_logits = policy_output['primitive_logits']
+                            primitive_params = policy_output['primitive_params']
+                            
+                            # Update PrimitiveExecutor with the first query of the new chunk
+                            # This matches the design in IACT_B/policy.py
+                            prim_probs = torch.softmax(primitive_logits[0, 0], dim=-1)
+                            prim_id = torch.argmax(prim_probs).item()
+                            prim_params = primitive_params[0, 0].detach().cpu().numpy()
+                            policy.primitive_executor.update_primitive(prim_id, prim_params)
+
+                        if temporal_agg:
+                            all_time_actions[[t], t:t+num_queries] = all_q_ref
+                            actions_for_curr_step = all_time_actions[:, t]
+                            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                            actions_for_curr_step = actions_for_curr_step[actions_populated]
+                            k = 0.01
+                            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                            exp_weights = exp_weights / exp_weights.sum()
+                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        else:
+                            raw_action = all_q_ref[:, t % query_frequency]
+                        
+                        # Apply PrimitiveExecutor to the (aggregated) joint reference
+                        q_ref_curr = raw_action.squeeze(0).detach().cpu().numpy()
+                        exec_result = policy.primitive_executor.execute_joint_reference(
+                            q_ref_curr, qpos_numpy, qvel_numpy, effort_np
+                        )
+                        raw_action = torch.from_numpy(exec_result['q_cmd']).float().cuda().unsqueeze(0)
+                    # END
+                    
                     else:
                         raise NotImplementedError
 

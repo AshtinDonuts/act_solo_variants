@@ -16,7 +16,8 @@ sys.path.insert(0, parent_dir)
 
 from detr.models.backbone import build_backbone
 from detr.models.transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
-from detr.models.detr_vae_tau_v1 import reparametrize, get_sinusoid_encoding_table
+from detr.models.detr_vae import reparametrize, get_sinusoid_encoding_table  ## use architecture from vanilla ACT for now.
+# from detr.models.detr_vae_tau_v1 import reparametrize, get_sinusoid_encoding_table
 
 
 class PrimitiveHead(nn.Module):
@@ -214,7 +215,6 @@ def build(args):
     """Build IACT_B model"""
     state_dim = getattr(args, 'state_dim', 7)
     
-    # Build backbones
     backbones = []
     backbone = build_backbone(args)
     backbones.append(backbone)
@@ -227,9 +227,9 @@ def build(args):
     primitive_param_dim = getattr(args, 'primitive_param_dim', 8)  # Default: 8D params
     
     model = IACT_B_VAE(
-        backbones=backbones,
-        transformer=transformer,
-        encoder=encoder,
+        backbones,
+        transformer,
+        encoder,
         state_dim=state_dim,
         num_queries=args.num_queries,
         camera_names=args.camera_names,
@@ -238,6 +238,6 @@ def build(args):
     )
     
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Number of parameters: {n_parameters/1e6:.2f}M")
+    print("number of parameters: %.2fM" % (n_parameters/1e6,))
     
     return model

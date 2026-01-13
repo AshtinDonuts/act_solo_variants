@@ -47,6 +47,10 @@ def get_args_parser():
                         help="Number of attention heads inside the transformer's attentions")
     parser.add_argument('--num_queries', default=400, type=int, # will be overridden
                         help="Number of query slots")
+                        
+    #  IACT_B args
+    parser.add_argument('--num_primitives', default=6, type=int)
+    parser.add_argument('--primitive_param_dim', default=8, type=int)
     parser.add_argument('--pre_norm', action='store_true')
 
     # * Segmentation

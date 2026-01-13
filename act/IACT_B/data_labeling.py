@@ -72,23 +72,30 @@ def detect_events(qpos: np.ndarray,
         
         # CONTACT_ON: torque spikes above threshold
         if tau_mag > contact_torque_threshold:
+
             # Check if this is a new contact (previous was below threshold)
             if t > 0 and np.linalg.norm(tau_meas[t-1]) < contact_torque_threshold * 0.5:
                 events[t] = EventLabel.CONTACT_ON
+
             # Check for JAM: high force + low velocity
             elif tau_mag > jam_force_threshold and qdot_mag < jam_velocity_tolerance:
                 events[t] = EventLabel.JAM
+
             # Otherwise, maintain contact state
             elif t > 0 and events[t-1] == EventLabel.CONTACT_ON:
                 events[t] = EventLabel.CONTACT_ON
+
             else:
                 events[t] = EventLabel.CONTACT_ON
+
         # CONTACT_OFF: torque drops below threshold
         elif t > 0 and np.linalg.norm(tau_meas[t-1]) > contact_torque_threshold * 0.5:
             events[t] = EventLabel.CONTACT_OFF
+
         # SLIP: tangential motion + contact proxy
         elif tau_mag > contact_torque_threshold * 0.5 and qdot_mag > slip_velocity_threshold:
             events[t] = EventLabel.SLIP
+            
         else:
             events[t] = EventLabel.NONE
     
@@ -252,10 +259,13 @@ def label_episode(qpos: np.ndarray,
     """
     # Detect events
     events = detect_events(
-        qpos, qdot, q_ref, tau_meas,
-        contact_torque_threshold=contact_torque_threshold,
-        slip_velocity_threshold=slip_velocity_threshold,
-        jam_force_threshold=jam_force_threshold
+                        qpos,
+                        qdot,
+                        q_ref,
+                        tau_meas,
+                        contact_torque_threshold=contact_torque_threshold,
+                        slip_velocity_threshold=slip_velocity_threshold,
+                        jam_force_threshold=jam_force_threshold
     )
     
     # Segment into primitives
