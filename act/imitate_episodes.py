@@ -21,11 +21,9 @@ from policy import (
     ACTPolicy,
     CNNMLPPolicy,
 )
-# Simulation is not supported for Aloha Solo
-# TODO: Uncommenting this will result in error. Needs to be fixed
-# from sim_env import (
-#     BOX_POSE,
-# )
+from sim_scripts.sim_env import (
+    BOX_POSE,
+)
 from utils import (
     compute_dict_mean,
     detach_dict,
@@ -272,7 +270,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
         
         env_max_reward = 0
     else:
-        from sim_env import make_sim_env
+        from sim_scripts.sim_env import make_sim_env
         env = make_sim_env(task_name)
         env_max_reward = env.task.max_reward
 
@@ -289,11 +287,10 @@ def eval_bc(config, ckpt_name, save_episode=True):
     for rollout_id in range(num_rollouts):
         rollout_id += 0
         ### set task
-        # TODO: Simulation is not supported
-        # if 'sim_transfer_cube' in task_name:
-        #     BOX_POSE[0] = sample_box_pose() # used in sim reset
-        # elif 'sim_insertion' in task_name:
-        #     BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
+        if 'sim_transfer_cube' in task_name:
+            BOX_POSE[0] = sample_box_pose() # used in sim reset
+        elif 'sim_insertion' in task_name:
+            BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
 
         ts = env.reset()
 
