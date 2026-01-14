@@ -16,6 +16,7 @@ sys.path.insert(0, parent_dir)
 
 from SegACT.main import build_SegACT_model_and_optimizer
 from SegACT.pose_painter import paint_pose_on_segmentation
+from SegACT.segmentation_models import load_segmentation_model, SegmentationModelBase
 from torch.nn import functional as F
 import torch.nn as nn
 import torchvision.transforms as transforms
@@ -48,35 +49,34 @@ class SegACT_Policy(nn.Module):
         self.camera_intrinsics = args_override.get('camera_intrinsics', None)
         self.camera_extrinsics = args_override.get('camera_extrinsics', None)
         
+        # Segmentation model
+        seg_model_type = args_override.get('segmentation_model', 'placeholder')
+        seg_model_path = args_override.get('segmentation_model_path', None)
+        seg_model_kwargs = args_override.get('segmentation_model_kwargs', {})
+        self.segmentation_model = load_segmentation_model(
+            model_type=seg_model_type,
+            model_path=seg_model_path,
+            device='cuda',
+            **seg_model_kwargs
+        )
+        
         print(f'KL Weight: {self.kl_weight}')
         print(f'Ablation mode: {self.ablation_mode}')
         print(f'Pose noise scale: {self.pose_noise_scale}')
+        print(f'Segmentation model: {seg_model_type}')
 
     def _get_segmentation_mask(self, image):
         """
-        Get segmentation mask from RGB image.
+        Get segmentation mask from RGB image using the configured segmentation model.
         
-        For now, we'll use a simple approach:
-        - If segmentation is provided, use it
-        - Otherwise, generate a simple segmentation from RGB (placeholder)
+        Args:
+            image: RGB image tensor, normalized to [0, 1]
+                   Shape: (batch, num_cam, C, H, W) or (num_cam, C, H, W) or (C, H, W)
         
-        In practice, this should use a proper segmentation model or load pre-computed masks.
+        Returns:
+            Segmentation mask tensor with same shape as input
         """
-        # TODO: Implement proper segmentation
-        # For now, return a simple grayscale version as placeholder
-        # In practice, this should use a segmentation model or load from dataset
-        if len(image.shape) == 4:  # (batch, num_cam, C, H, W)
-            # Convert to grayscale as placeholder segmentation
-            seg = torch.mean(image, dim=2, keepdim=True)  # (batch, num_cam, 1, H, W)
-            seg = seg.repeat(1, 1, 3, 1, 1)  # (batch, num_cam, 3, H, W)
-            return seg
-        else:
-            # Single image
-            seg = torch.mean(image, dim=0, keepdim=True)  # (1, H, W) or (C, H, W)
-            if len(seg.shape) == 3:
-                seg = seg.unsqueeze(0)  # Add channel dim if needed
-            seg = seg.repeat(3, 1, 1)  # Make it 3-channel
-            return seg
+        return self.segmentation_model.segment(image)
 
     def _paint_poses_on_segmentation(self, segmentation, object_pose=None, eef_pose=None, contact_normal=None):
         """

@@ -50,6 +50,10 @@ def get_args_parser():
                         help="Number of query slots")
     parser.add_argument('--pre_norm', action='store_true')
 
+    # * Segmentation
+    parser.add_argument('--masks', action='store_true',
+                        help="Train segmentation head if the flag is provided")
+
     # SegACT specific parameters
     parser.add_argument('--ablation_mode', default='full', type=str,
                         choices=('seg_only', 'seg_obj', 'seg_obj_eef', 'full'),
@@ -60,6 +64,13 @@ def get_args_parser():
                         help="Length of pose axes in meters")
     parser.add_argument('--pose_thickness', default=2, type=int,
                         help="Base thickness of pose overlay lines")
+    parser.add_argument('--segmentation_model', default='placeholder', type=str,
+                        choices=('placeholder', 'fastsam', 're_detr'),
+                        help="Segmentation model to use: placeholder, fastsam, or re_detr")
+    parser.add_argument('--segmentation_model_path', default=None, type=str,
+                        help="Path to segmentation model weights (optional)")
+    parser.add_argument('--segmentation_model_kwargs', default={}, type=dict,
+                        help="Additional kwargs for segmentation model (e.g., conf_threshold)")
 
     # repeat args in imitate_episodes just to avoid error. Will not be used
     parser.add_argument('--eval', action='store_true')
@@ -85,6 +96,10 @@ def build_SegACT_model_and_optimizer(args_override):
 
     for k, v in args_override.items():
         setattr(args, k, v)
+    
+    # Ensure masks attribute exists (defaults to False if not set)
+    if not hasattr(args, 'masks'):
+        args.masks = False
 
     model = build(args)
     model.cuda()
