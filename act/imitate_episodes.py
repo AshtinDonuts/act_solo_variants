@@ -22,6 +22,7 @@ from policy import (
     CNNMLPPolicy,
 )
 from IACT_B.policy import IACT_B_Policy
+from SegACT.policy import SegACT_Policy
 # from sim_scripts.sim_env import (
 #     BOX_POSE,
 # )
@@ -104,6 +105,11 @@ def main(args):
             'nheads': nheads,
             'camera_names': camera_names,
         }
+        #  Implement specific configurations
+        if experiment_id == 'ID01':
+            policy_config['experiment_id'] = experiment_id
+            policy_config['torque_dim'] = 6
+
     elif policy_class == 'CNNMLP':
         policy_config = {
             'lr': args['lr'],
@@ -131,8 +137,31 @@ def main(args):
             'num_primitives': args.get('num_primitives', 6),
             'primitive_param_dim': args.get('primitive_param_dim', 8),
         }
+    elif policy_class == 'SegACT':
+        enc_layers = 4
+        dec_layers = 7
+        nheads = 8
+        policy_config = {
+            'lr': args['lr'],
+            'num_queries': args['chunk_size'],
+            'kl_weight': args['kl_weight'],
+            'hidden_dim': args['hidden_dim'],
+            'dim_feedforward': args['dim_feedforward'],
+            'lr_backbone': lr_backbone,
+            'backbone': backbone,
+            'enc_layers': enc_layers,
+            'dec_layers': dec_layers,
+            'nheads': nheads,
+            'camera_names': camera_names,
+            'ablation_mode': args.get('ablation_mode', 'full'),
+            'pose_noise_scale': args.get('pose_noise_scale', 0.0),
+            'axis_length': args.get('axis_length', 0.05),
+            'pose_thickness': args.get('pose_thickness', 2),
+            'camera_intrinsics': args.get('camera_intrinsics', None),
+            'camera_extrinsics': args.get('camera_extrinsics', None),
+        }
     else:
-        raise NotImplementedError("policy_class must be one of 'ACT', 'CNNMLP', or 'IACT_B'.")
+        raise NotImplementedError("policy_class must be one of 'ACT', 'CNNMLP', 'IACT_B', or 'SegACT'.")
 
     ##  TORQUE CONFIGS
     if experiment_id == 'ID01':
@@ -202,6 +231,8 @@ def make_policy(policy_class, policy_config):
         policy = CNNMLPPolicy(policy_config)
     elif policy_class == 'IACT_B':
         policy = IACT_B_Policy(policy_config)
+    elif policy_class == 'SegACT':
+        policy = SegACT_Policy(policy_config)
     else:
         raise NotImplementedError
     return policy
@@ -213,6 +244,8 @@ def make_optimizer(policy_class, policy):
     elif policy_class == 'CNNMLP':
         optimizer = policy.configure_optimizers()
     elif policy_class == 'IACT_B':
+        optimizer = policy.configure_optimizers()
+    elif policy_class == 'SegACT':
         optimizer = policy.configure_optimizers()
     else:
         raise NotImplementedError
@@ -388,6 +421,31 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     elif config['policy_class'] == "CNNMLP":
                         raw_action = policy(qpos, curr_image)
                     
+                    # SegACT: Pose-painted segmentation
+                    elif config['policy_class'] == 'SegACT':
+                        # Get object pose and EEF pose from observations if available
+                        object_pose = obs.get('object_pose', None)
+                        eef_pose = obs.get('eef_pose', None)
+                        contact_normal = obs.get('contact_normal', None)
+                        
+                        if t % query_frequency == 0:
+                            all_actions = policy(qpos, curr_image, effort,
+                                                object_pose=object_pose,
+                                                eef_pose=eef_pose,
+                                                contact_normal=contact_normal)
+                        if temporal_agg:
+                            all_time_actions[[t], t:t+num_queries] = all_actions
+                            actions_for_curr_step = all_time_actions[:, t]
+                            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                            actions_for_curr_step = actions_for_curr_step[actions_populated]
+                            k = 0.01
+                            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                            exp_weights = exp_weights / exp_weights.sum()
+                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        else:
+                            raw_action = all_actions[:, t % query_frequency]
+                    
                     # NOTE
                     # Experimental for Impedance ACT type B
                     elif config['policy_class'] == 'IACT_B':
@@ -501,7 +559,15 @@ def forward_pass(data, policy):
     action_data = action_data.cuda()
     is_pad = is_pad.cuda()
     effort_data = effort_data.cuda()
-    return policy(qpos_data, image_data, effort_data, action_data, is_pad)
+    
+    # For SegACT, we may need pose data if available
+    # For now, pass None (will use placeholder segmentation)
+    if hasattr(policy, 'ablation_mode'):
+        # SegACT policy
+        return policy(qpos_data, image_data, effort_data, action_data, is_pad,
+                     object_pose=None, eef_pose=None, contact_normal=None)
+    else:
+        return policy(qpos_data, image_data, effort_data, action_data, is_pad)
 
 
 def train_bc(train_dataloader, val_dataloader, config):
@@ -622,6 +688,17 @@ if __name__ == '__main__':
 
     # for ACT variants
     parser.add_argument('--experiment_id', action='store', type=str, help='experiment_id', required=False)
+    
+    # for SegACT
+    parser.add_argument('--ablation_mode', action='store', type=str,
+                       choices=('seg_only', 'seg_obj', 'seg_obj_eef', 'full'),
+                       help='SegACT ablation mode', required=False, default='full')
+    parser.add_argument('--pose_noise_scale', action='store', type=float,
+                       help='Scale for random noise on pose overlays', required=False, default=0.0)
+    parser.add_argument('--axis_length', action='store', type=float,
+                       help='Length of pose axes in meters', required=False, default=0.05)
+    parser.add_argument('--pose_thickness', action='store', type=int,
+                       help='Base thickness of pose overlay lines', required=False, default=2)
 
     argument = vars(parser.parse_args())
     main(argument)
