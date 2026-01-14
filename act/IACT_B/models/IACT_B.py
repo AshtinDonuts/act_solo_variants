@@ -105,10 +105,9 @@ class IACT_B_VAE(nn.Module):
         self.cls_embed = nn.Embedding(1, hidden_dim)
         self.encoder_action_proj = nn.Linear(state_dim, hidden_dim)
         self.encoder_joint_proj = nn.Linear(state_dim, hidden_dim)
-        self.encoder_effort_proj = nn.Linear(state_dim, hidden_dim)
         self.latent_proj = nn.Linear(hidden_dim, self.latent_dim * 2)
-        # [CLS], qpos, effort, a_seq
-        self.register_buffer('pos_table', get_sinusoid_encoding_table(1 + 1 + 1 + num_queries, hidden_dim))
+        # [CLS], qpos, a_seq
+        self.register_buffer('pos_table', get_sinusoid_encoding_table(1 + 1 + num_queries, hidden_dim))
 
         # Decoder extra parameters
         self.latent_out_proj = nn.Linear(self.latent_dim, hidden_dim)
@@ -119,7 +118,7 @@ class IACT_B_VAE(nn.Module):
         Args:
             qpos: (batch, state_dim) - robot joint positions
             image: (batch, num_cam, channel, height, width) - camera images
-            effort: (batch, effort_dim) - joint efforts/torques
+            effort: (batch, effort_dim) - joint efforts/torques (not used, kept for compatibility)
             env_state: Environment state (can be None)
             actions: (batch, seq, action_dim) - action sequence for training
             is_pad: (batch, seq) - padding mask for actions
@@ -138,18 +137,16 @@ class IACT_B_VAE(nn.Module):
             action_embed = self.encoder_action_proj(actions)  # (bs, seq, hidden_dim)
             qpos_embed = self.encoder_joint_proj(qpos)  # (bs, hidden_dim)
             qpos_embed = torch.unsqueeze(qpos_embed, axis=1)  # (bs, 1, hidden_dim)
-            effort_embed = self.encoder_effort_proj(effort)  # (bs, hidden_dim)
-            effort_embed = torch.unsqueeze(effort_embed, axis=1)  # (bs, 1, hidden_dim)
             cls_embed = self.cls_embed.weight  # (1, hidden_dim)
             cls_embed = torch.unsqueeze(cls_embed, axis=0).repeat(bs, 1, 1)  # (bs, 1, hidden_dim)
-            encoder_input = torch.cat([cls_embed, qpos_embed, effort_embed, action_embed], axis=1)  # (bs, seq+3, hidden_dim)
-            encoder_input = encoder_input.permute(1, 0, 2)  # (seq+3, bs, hidden_dim)
+            encoder_input = torch.cat([cls_embed, qpos_embed, action_embed], axis=1)  # (bs, seq+2, hidden_dim)
+            encoder_input = encoder_input.permute(1, 0, 2)  # (seq+2, bs, hidden_dim)
             
-            cls_joint_effort_is_pad = torch.full((bs, 3), False).to(qpos.device)
-            is_pad = torch.cat([cls_joint_effort_is_pad, is_pad], axis=1)  # (bs, seq+3)
+            cls_joint_is_pad = torch.full((bs, 2), False).to(qpos.device)
+            is_pad = torch.cat([cls_joint_is_pad, is_pad], axis=1)  # (bs, seq+2)
             
             pos_embed = self.pos_table.clone().detach()
-            pos_embed = pos_embed.permute(1, 0, 2)  # (seq+3, 1, hidden_dim)
+            pos_embed = pos_embed.permute(1, 0, 2)  # (seq+2, 1, hidden_dim)
             
             encoder_output = self.encoder(encoder_input, pos=pos_embed, src_key_padding_mask=is_pad)
             encoder_output = encoder_output[0]  # take cls output only
