@@ -159,6 +159,9 @@ def main(args):
             'pose_thickness': args.get('pose_thickness', 2),
             'camera_intrinsics': args.get('camera_intrinsics', None),
             'camera_extrinsics': args.get('camera_extrinsics', None),
+            'segmentation_model': args.get('segmentation_model', 'placeholder'),
+            'segmentation_model_path': args.get('segmentation_model_path', None),
+            'segmentation_model_kwargs': args.get('segmentation_model_kwargs', {}),
         }
     else:
         raise NotImplementedError("policy_class must be one of 'ACT', 'CNNMLP', 'IACT_B', or 'SegACT'.")
@@ -170,6 +173,29 @@ def main(args):
 
     ##  Consolidate the all changes to the configurations above PRIOR TO THIS BLOCK.
     ##  Config AFTER this line should NOT BE modified.
+
+    # Parse checkpoint saving schedule
+    ckpt_save_schedule = args.get('ckpt_save_schedule', None)
+    if ckpt_save_schedule is None:
+        # Default: save every 500 epochs
+        ckpt_save_schedule = 500
+    else:
+        # Try to parse as comma-separated list of epochs
+        try:
+            epoch_list = [int(x.strip()) for x in ckpt_save_schedule.split(',')]
+            if len(epoch_list) == 1:
+                # Single integer: treat as interval
+                ckpt_save_schedule = epoch_list[0]
+            else:
+                # Multiple integers: treat as specific epochs
+                ckpt_save_schedule = set(epoch_list)
+        except ValueError:
+            # If parsing fails, try as single integer
+            try:
+                ckpt_save_schedule = int(ckpt_save_schedule)
+            except ValueError:
+                raise ValueError(f"Invalid checkpoint schedule format: {ckpt_save_schedule}. "
+                               f"Expected integer or comma-separated list of integers.")
 
     config = {
         'num_epochs': num_epochs,
@@ -185,7 +211,8 @@ def main(args):
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
         'real_robot': not is_sim,
-        'robot_config': robot_config
+        'robot_config': robot_config,
+        'ckpt_save_schedule': ckpt_save_schedule
     }
 
     if is_eval:
@@ -576,6 +603,7 @@ def train_bc(train_dataloader, val_dataloader, config):
     seed = config['seed']
     policy_class = config['policy_class']
     policy_config = config['policy_config']
+    ckpt_save_schedule = config.get('ckpt_save_schedule', 500)
 
     set_seed(seed)
 
@@ -628,7 +656,22 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        if epoch % 500 == 0:
+        # Checkpoint saving based on schedule
+        should_save_ckpt = False
+        if isinstance(ckpt_save_schedule, int):
+            # Interval-based: save every N epochs
+            if epoch % ckpt_save_schedule == 0:
+                should_save_ckpt = True
+        elif isinstance(ckpt_save_schedule, set):
+            # Specific epochs: save at listed epochs
+            if epoch in ckpt_save_schedule:
+                should_save_ckpt = True
+        else:
+            # Fallback: default interval of 500
+            if epoch % 500 == 0:
+                should_save_ckpt = True
+        
+        if should_save_ckpt:
             ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
             torch.save(policy.state_dict(), ckpt_path)
         if epoch % 100 == 0:
@@ -699,6 +742,16 @@ if __name__ == '__main__':
                        help='Length of pose axes in meters', required=False, default=0.05)
     parser.add_argument('--pose_thickness', action='store', type=int,
                        help='Base thickness of pose overlay lines', required=False, default=2)
+    parser.add_argument('--segmentation_model', action='store', type=str,
+                       choices=('placeholder', 'fastsam', 're_detr'),
+                       help='Segmentation model to use', required=False, default='placeholder')
+    parser.add_argument('--segmentation_model_path', action='store', type=str,
+                       help='Path to segmentation model weights', required=False, default=None)
+    # Note: segmentation_model_kwargs would need to be passed as JSON string or separate args
+    
+    parser.add_argument('--ckpt_save_schedule', action='store', type=str,
+                       help='Checkpoint saving schedule: integer (save every N epochs) or comma-separated list of epochs (e.g., "100,500,1000")', 
+                       required=False, default=None)
 
     argument = vars(parser.parse_args())
     main(argument)
