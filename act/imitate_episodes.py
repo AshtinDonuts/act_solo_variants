@@ -128,7 +128,8 @@ def main(args):
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
         'real_robot': not is_sim,
-        'robot_config': robot_config
+        'robot_config': robot_config,
+        'num_rollouts': args['num_rollouts'],
     }
 
     if is_eval:
@@ -273,7 +274,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
     max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
 
-    num_rollouts = 1   ###
+    num_rollouts = config['num_rollouts']
     episode_returns = []
     highest_rewards = []
     for rollout_id in range(num_rollouts):
@@ -535,6 +536,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
+    parser.add_argument('--num_rollouts', action='store', type=int, default=10, help='num_rollouts', required=False)
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
