@@ -132,6 +132,8 @@ def main(args):
         'num_rollouts': args['num_rollouts'],
     }
 
+    import pdb ; pdb.set_trace()
+
     if is_eval:
         ckpt_names = ['policy_best.ckpt']
         # ckpt_names = ['policy_epoch_3500_seed_0.ckpt'] ##
@@ -321,7 +323,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
                         plt.pause(dt)
 
                     ### process previous timestep to get qpos and image_list
-                    obs = ts.observation
+                    obs = ts.observation ; import pdb ; pdb.set_trace()
                     if 'images' in obs:
                         image_list.append(obs['images'])
                     else:
@@ -397,6 +399,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
         print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
 
         if save_episode:
+            import pdb ; pdb.set_trace()
             save_videos(image_list, dt, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))
             qpos_data_path = os.path.join(ckpt_dir, f'qpos_{rollout_id}.pkl')
             with open(qpos_data_path, 'wb') as f:
