@@ -132,8 +132,6 @@ def main(args):
         'num_rollouts': args['num_rollouts'],
     }
 
-    import pdb ; pdb.set_trace()
-
     if is_eval:
         ckpt_names = ['policy_best.ckpt']
         # ckpt_names = ['policy_epoch_3500_seed_0.ckpt'] ##
@@ -289,6 +287,16 @@ def eval_bc(config, ckpt_name, save_episode=True):
         #     BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
 
         ts = env.reset()
+        
+        # Open gripper after reset completes (gripper stayed in position during reset)
+        # Only do this after the first rollout (not before the first rollout)
+        if real_robot and rollout_id > 0:
+            move_grippers(
+                env.follower_bots,
+                [FOLLOWER_GRIPPER_JOINT_OPEN],
+                moving_time=0.5,
+                dt=dt,
+            )
 
         ### onscreen render
         if onscreen_render:
@@ -323,7 +331,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
                         plt.pause(dt)
 
                     ### process previous timestep to get qpos and image_list
-                    obs = ts.observation ; import pdb ; pdb.set_trace()
+                    obs = ts.observation
                     if 'images' in obs:
                         image_list.append(obs['images'])
                     else:
@@ -381,15 +389,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
             print(f"\nInterrupted at timestep {len(qpos_list)}/{max_timesteps}. Saving collected data...")
             save_qpos_data()
             raise
-        if real_robot:
-            # open
-            move_grippers(
-                env.follower_bots,
-                [FOLLOWER_GRIPPER_JOINT_OPEN],
-                moving_time=0.5,
-                dt=dt,
-            )
-            pass
+        
+        # Note: Gripper opening is now done after reset completes (see above)
+        # This ensures gripper stays in position during arm reset
 
         rewards = np.array(rewards)
         episode_return = np.sum(rewards[rewards!=None])
@@ -399,7 +401,6 @@ def eval_bc(config, ckpt_name, save_episode=True):
         print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
 
         if save_episode:
-            import pdb ; pdb.set_trace()
             save_videos(image_list, dt, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))
             qpos_data_path = os.path.join(ckpt_dir, f'qpos_{rollout_id}.pkl')
             with open(qpos_data_path, 'wb') as f:
