@@ -90,6 +90,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 def get_norm_stats(dataset_dir, episode_indices):
     all_qpos_data = []
     all_action_data = []
+    starting_qpos_data = []  # First qpos from each episode
     for episode_idx in episode_indices:
         dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
         if not os.path.exists(dataset_path):
@@ -102,6 +103,8 @@ def get_norm_stats(dataset_dir, episode_indices):
             action = root['/action'][()]
         all_qpos_data.append(torch.from_numpy(qpos))
         all_action_data.append(torch.from_numpy(action))
+        # Store the first qpos (starting pose) from each episode
+        starting_qpos_data.append(torch.from_numpy(qpos[0]))
     if len(all_qpos_data) == 0 or len(all_action_data) == 0:
         raise ValueError(f'No episodes found in {dataset_dir} (checked indices {episode_indices})')
     all_qpos_data = torch.stack(all_qpos_data)
@@ -118,11 +121,16 @@ def get_norm_stats(dataset_dir, episode_indices):
     qpos_std = all_qpos_data.std(dim=[0, 1], keepdim=True)
     qpos_std = torch.clip(qpos_std, 1e-2, np.inf) # clipping
 
+    # compute mean starting qpos (first timestep of each episode)
+    starting_qpos_data = torch.stack(starting_qpos_data)
+    starting_qpos_mean = starting_qpos_data.mean(dim=0)
+
     stats = {
         "action_mean": action_mean.numpy().squeeze(),
         "action_std": action_std.numpy().squeeze(),
         "qpos_mean": qpos_mean.numpy().squeeze(),
         "qpos_std": qpos_std.numpy().squeeze(),
+        "starting_qpos_mean": starting_qpos_mean.numpy().squeeze(),
         "example_qpos": qpos,
     }
 
