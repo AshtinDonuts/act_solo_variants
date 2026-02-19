@@ -275,7 +275,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
             node = get_interbotix_global_node()
         except:
             node = create_interbotix_global_node('aloha')
-        env = make_real_env(node=node, setup_robots= False, torque_base=False, setup_base=False, config=config_robot)
+        env = make_real_env(node=node, setup_robots= False, torque_base=False, setup_base=False, config=config_robot, bool_dynamics_torque=True)
         try:
             robot_startup(node)
         except InterbotixException:
@@ -353,11 +353,31 @@ def eval_bc(config, ckpt_name, save_episode=True):
         rewards = []
         qpos_data_path = os.path.join(ckpt_dir, f'qpos_{rollout_id}.pkl')
         
+        # Lists to store dynamics torque components
+        gravity_torques_list = []
+        kinetic_friction_torques_list = []
+        static_friction_torques_list = []
+        dither_speeds_list = []
+        no_load_currents_list = []
+        dynamics_torque_data_path = os.path.join(ckpt_dir, f'dynamics_torque_{rollout_id}.pkl')
+        
         def save_qpos_data():
             """Helper function to save qpos data incrementally"""
             if save_episode:
                 with open(qpos_data_path, 'wb') as f:
                     pickle.dump({'qpos': qpos_list, 'target_qpos': target_qpos_list, 'rewards': rewards}, f)
+        
+        def save_dynamics_torque_data():
+            """Helper function to save dynamics torque data incrementally"""
+            if save_episode and real_robot:
+                with open(dynamics_torque_data_path, 'wb') as f:
+                    pickle.dump({
+                        'gravity_torques': gravity_torques_list,
+                        'kinetic_friction_torques': kinetic_friction_torques_list,
+                        'static_friction_torques': static_friction_torques_list,
+                        'dither_speeds': dither_speeds_list,
+                        'no_load_currents': no_load_currents_list,
+                    }, f)
         
         try:
             with torch.inference_mode():
@@ -419,13 +439,27 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     target_qpos_list.append(target_qpos)
                     rewards.append(ts.reward)
                     
+                    # Record dynamics torque components if available (only for real robot)
+                    # Check ts.observation after step, not the old obs
+                    if real_robot and 'dynamics_torque' in ts.observation:
+                        dynamics = ts.observation['dynamics_torque']
+                        gravity_torques_list.append(dynamics.get('gravity_torques', None))
+                        kinetic_friction_torques_list.append(dynamics.get('kinetic_friction_torques', None))
+                        static_friction_torques_list.append(dynamics.get('static_friction_torques', None))
+                        dither_speeds_list.append(dynamics.get('dither_speeds', None))
+                        no_load_currents_list.append(dynamics.get('no_load_currents', None))
+                    
                     # Save incrementally every timestep
                     save_qpos_data()
+                    if real_robot:
+                        save_dynamics_torque_data()
 
             plt.close()
         except KeyboardInterrupt:
             print(f"\nInterrupted at timestep {len(qpos_list)}/{max_timesteps}. Saving collected data...")
             save_qpos_data()
+            if real_robot:
+                save_dynamics_torque_data()
             raise
         
         # Note: Gripper opening is now done after reset completes (see above)
@@ -443,6 +477,18 @@ def eval_bc(config, ckpt_name, save_episode=True):
             qpos_data_path = os.path.join(ckpt_dir, f'qpos_{rollout_id}.pkl')
             with open(qpos_data_path, 'wb') as f:
                 pickle.dump({'qpos': qpos_list, 'target_qpos': target_qpos_list, 'rewards': rewards}, f)
+            
+            # Save dynamics torque data (only for real robot)
+            if real_robot:
+                dynamics_torque_data_path = os.path.join(ckpt_dir, f'dynamics_torque_{rollout_id}.pkl')
+                with open(dynamics_torque_data_path, 'wb') as f:
+                    pickle.dump({
+                        'gravity_torques': gravity_torques_list,
+                        'kinetic_friction_torques': kinetic_friction_torques_list,
+                        'static_friction_torques': static_friction_torques_list,
+                        'dither_speeds': dither_speeds_list,
+                        'no_load_currents': no_load_currents_list,
+                    }, f)
 
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
     avg_return = np.mean(episode_returns)
@@ -466,9 +512,10 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
 
 def forward_pass(data, policy):
-    image_data, qpos_data, action_data, is_pad = data
+    image_data, qpos_data, effort_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
-    return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
+    # effort_data is kept in data tuple for recording purposes but not used by policy
+    return policy(qpos_data, image_data, action_data, is_pad)
 
 
 def train_bc(train_dataloader, val_dataloader, config):

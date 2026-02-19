@@ -1,4 +1,7 @@
 act/ckpt_dir/
+ACT_media/
+FastSAM-x.pt
+
 
 bin
 logs

@@ -258,7 +258,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
 
-    pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
+    pre_process_qpos = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
     post_process = lambda a: a * stats['action_std'] + stats['action_mean']
 
     # load environment
@@ -375,7 +375,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     else:
                         image_list.append({'main': obs['image']})
                     qpos_numpy = np.array(obs['qpos'])
-                    qpos = pre_process(qpos_numpy)
+                    qpos = pre_process_qpos(qpos_numpy)
                     qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                     qpos_history[:, t] = qpos
                     ## Skip the left shoulder camera camera JAN8
@@ -466,9 +466,10 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
 
 def forward_pass(data, policy):
-    image_data, qpos_data, action_data, is_pad = data
+    image_data, qpos_data, effort_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
-    return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
+    # effort_data is kept in data tuple for recording purposes but not used by policy
+    return policy(qpos_data, image_data, action_data, is_pad)
 
 
 def train_bc(train_dataloader, val_dataloader, config):
