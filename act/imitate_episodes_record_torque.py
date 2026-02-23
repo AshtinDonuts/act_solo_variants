@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from tqdm import tqdm
+import wandb
 
 
 from policy import (
@@ -138,16 +139,35 @@ def main(args):
         'num_rollouts': args['num_rollouts'],
     }
 
+    # Initialize wandb if enabled
+    use_wandb = args.get('use_wandb', False)
+    if use_wandb:
+        wandb_project = args.get('wandb_project', 'act_training')
+        wandb_entity = args.get('wandb_entity', None)
+        wandb_name = args.get('wandb_name', None) or f"{task_name}_{policy_class}_seed{args['seed']}"
+        
+        wandb.init(
+            project=wandb_project,
+            entity=wandb_entity,
+            name=wandb_name,
+            config=config,
+            dir=ckpt_dir,
+        )
+        print(f'Initialized wandb: project={wandb_project}, name={wandb_name}')
+
     if is_eval:
         ckpt_names = ['policy_best.ckpt']
         results = []
         for ckpt_name in ckpt_names:
-            success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=True)
+            success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=True, use_wandb=use_wandb)
             results.append([ckpt_name, success_rate, avg_return])
 
         for ckpt_name, success_rate, avg_return in results:
             print(f'{ckpt_name}: {success_rate=} {avg_return=}')
         print()
+        
+        if use_wandb:
+            wandb.finish()
         exit()
 
     train_dataloader, val_dataloader, stats, _ = load_data(
@@ -164,13 +184,16 @@ def main(args):
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
-    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
+    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config, use_wandb=use_wandb)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
     ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     torch.save(best_state_dict, ckpt_path)
     print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
+    
+    if use_wandb:
+        wandb.finish()
 
 
 def make_policy(policy_class, policy_config):
@@ -230,7 +253,7 @@ def get_latest_rollout_index(ckpt_dir):
     return max_index
 
 
-def eval_bc(config, ckpt_name, save_episode=True):
+def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
     set_seed(1000)
     ckpt_dir = config['ckpt_dir']
     state_dim = config['state_dim']
@@ -398,7 +421,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     qpos = pre_process(qpos_numpy)
                     qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                     qpos_history[:, t] = qpos
-                    ## Skip the left shoulder camera camera JAN8
+
+                    ## VIZ: Skip left shoulder camera
                     # camera_names = [camera for camera in camera_names if camera != 'left_shoulder_camera']
                     curr_image = get_image(ts, camera_names)
 
@@ -500,6 +524,33 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
     print(summary_str)
 
+    # Log to wandb if enabled
+    if use_wandb:
+        log_dict = {
+            'eval/success_rate': success_rate,
+            'eval/avg_return': avg_return,
+            'eval/ckpt_name': ckpt_name,
+            'eval/num_rollouts': num_rollouts,
+        }
+        # Add reward threshold rates
+        for r in range(env_max_reward+1):
+            more_or_equal_r = (np.array(highest_rewards) >= r).sum()
+            more_or_equal_r_rate = more_or_equal_r / num_rollouts
+            log_dict[f'eval/reward_>={r}_rate'] = more_or_equal_r_rate
+        
+        # Add summary statistics for rollouts
+        log_dict['eval/std_return'] = np.std(episode_returns)
+        log_dict['eval/min_return'] = np.min(episode_returns)
+        log_dict['eval/max_return'] = np.max(episode_returns)
+        
+        wandb.log(log_dict)
+        
+        # Log per-rollout metrics as a table
+        rollout_table = wandb.Table(columns=['rollout_id', 'return', 'highest_reward', 'success'])
+        for i, (ep_return, ep_highest) in enumerate(zip(episode_returns, highest_rewards)):
+            rollout_table.add_data(i, ep_return, ep_highest, int(ep_highest == env_max_reward))
+        wandb.log({'eval/rollout_table': rollout_table})
+
     # save success rate to txt
     result_file_name = 'result_' + ckpt_name.split('.')[0] + '.txt'
     with open(os.path.join(ckpt_dir, result_file_name), 'w') as f:
@@ -518,7 +569,7 @@ def forward_pass(data, policy):
     return policy(qpos_data, image_data, action_data, is_pad)
 
 
-def train_bc(train_dataloader, val_dataloader, config):
+def train_bc(train_dataloader, val_dataloader, config, use_wandb=False):
     num_epochs = config['num_epochs']
     ckpt_dir = config['ckpt_dir']
     seed = config['seed']
@@ -575,12 +626,32 @@ def train_bc(train_dataloader, val_dataloader, config):
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
+        
+        # Log training and validation metrics to wandb together
+        if use_wandb:
+            log_dict = {'epoch': epoch}
+            # Add validation metrics
+            val_epoch_summary = validation_history[-1]
+            for k, v in val_epoch_summary.items():
+                log_dict[f'val/{k}'] = v.item()
+            # Add training metrics
+            for k, v in epoch_summary.items():
+                log_dict[f'train/{k}'] = v.item()
+            wandb.log(log_dict, step=epoch)
 
-        if epoch % 1000 == 0:
+        if epoch % 5000 == 0:
             ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
             torch.save(policy.state_dict(), ckpt_path)
+            if use_wandb:
+                wandb.log({'checkpoint/epoch': epoch})
         if epoch % 100 == 0:
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
+            # Log plots to wandb
+            if use_wandb:
+                for key in train_history[0]:
+                    plot_path = os.path.join(ckpt_dir, f'train_val_{key}_seed_{seed}.png')
+                    if os.path.exists(plot_path):
+                        wandb.log({f'plots/{key}': wandb.Image(plot_path)}, step=epoch)
 
     ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')  ## DO NOT CHANGE THIS ONE
     torch.save(policy.state_dict(), ckpt_path)
@@ -589,9 +660,25 @@ def train_bc(train_dataloader, val_dataloader, config):
     ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{best_epoch}_seed_{seed}.ckpt')
     torch.save(best_state_dict, ckpt_path)
     print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
+    
+    # Log best checkpoint info to wandb
+    if use_wandb:
+        wandb.log({
+            'best/epoch': best_epoch,
+            'best/val_loss': min_val_loss,
+        })
+        wandb.summary['best_epoch'] = best_epoch
+        wandb.summary['best_val_loss'] = min_val_loss
 
     # save training curves
     plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed)
+    
+    # Log final plots to wandb
+    if use_wandb:
+        for key in train_history[0]:
+            plot_path = os.path.join(ckpt_dir, f'train_val_{key}_seed_{seed}.png')
+            if os.path.exists(plot_path):
+                wandb.log({f'final_plots/{key}': wandb.Image(plot_path)})
 
     return best_ckpt_info
 
@@ -635,6 +722,12 @@ if __name__ == '__main__':
     parser.add_argument('--temporal_agg', action='store_true')
     ##  cameras := camera_wrist_left, camera_right_shoulder, camera_left_shoulder
     parser.add_argument('--exclude_cameras', action='store', type=str, nargs='+', help='Camera names to exclude (e.g., camera_right_shoulder)', required=False)
+    
+    # wandb arguments
+    parser.add_argument('--use_wandb', action='store_true', help='Enable wandb logging', required=False)
+    parser.add_argument('--wandb_project', action='store', type=str, help='wandb project name', required=False, default='act_training')
+    parser.add_argument('--wandb_entity', action='store', type=str, help='wandb entity/team name', required=False, default=None)
+    parser.add_argument('--wandb_name', action='store', type=str, help='wandb run name', required=False, default=None)
 
     argument = vars(parser.parse_args())
     main(argument)
