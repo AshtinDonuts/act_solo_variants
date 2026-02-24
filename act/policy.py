@@ -14,6 +14,7 @@ class ACTPolicy(nn.Module):
         self.model = model # CVAE decoder
         self.optimizer = optimizer
         self.kl_weight = args_override['kl_weight']
+        self.use_obs_target = args_override.get('use_obs_target', False)
         print(f'KL Weight {self.kl_weight}')
 
     def __call__(self, qpos, image, actions=None, is_pad=None):
@@ -21,11 +22,21 @@ class ACTPolicy(nn.Module):
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                          std=[0.229, 0.224, 0.225])
         image = normalize(image)
-        if actions is not None: # training time
-            actions = actions[:, :self.model.num_queries]
-            is_pad = is_pad[:, :self.model.num_queries]
 
-            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, env_state, actions, is_pad)
+        if actions is not None:  # Heuristic to determine if Training
+            
+            if self.use_obs_target:  # RQ1 : Pass Follower Joints as Leader Joint states
+                # When use_obs_target is True, qpos is already loaded as a sequence from dataset
+                # qpos has shape (batch, seq, qpos_dim), use it directly as actions
+                # But we still need the first timestep for the model input
+                qpos_input = qpos[:, 0] if len(qpos.shape) == 3 else qpos  # (batch, qpos_dim) for model input
+                qpos_chunk = qpos[:, :self.model.num_queries]  # (batch, num_queries, qpos_dim)
+                actions = qpos_chunk
+            else:               # default actions as target
+                qpos_input = qpos  # (batch, qpos_dim) - already single timestep
+                actions = actions[:, :self.model.num_queries]
+            is_pad = is_pad[:, :self.model.num_queries]
+            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos_input, image, env_state, actions, is_pad)
             total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
             loss_dict = dict()
             all_l1 = F.l1_loss(actions, a_hat, reduction='none')
@@ -34,6 +45,7 @@ class ACTPolicy(nn.Module):
             loss_dict['kl'] = total_kld[0]
             loss_dict['loss'] = loss_dict['l1'] + loss_dict['kl'] * self.kl_weight
             return loss_dict
+            
         else: # inference time
             a_hat, _, (_, _) = self.model(qpos, image, env_state) # no action, sample from prior
             return a_hat

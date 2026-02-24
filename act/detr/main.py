@@ -70,9 +70,13 @@ def get_args_parser():
 
 
 def build_ACT_model_and_optimizer(args_override):
+    # Create args object from args_override instead of re-parsing command line
+    # This avoids needing to define all arguments in multiple places
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
-    args = parser.parse_args()
-
+    # Use parse_known_args to ignore unknown arguments, or create Namespace directly
+    args, _ = parser.parse_known_args()
+    
+    # Override with provided args_override
     for k, v in args_override.items():
         setattr(args, k, v)
 
@@ -93,9 +97,12 @@ def build_ACT_model_and_optimizer(args_override):
 
 
 def build_CNNMLP_model_and_optimizer(args_override):
+    # Create args object from args_override instead of re-parsing command line
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
-    args = parser.parse_args()
-
+    # Use parse_known_args to ignore unknown arguments
+    args, _ = parser.parse_known_args()
+    
+    # Override with provided args_override
     for k, v in args_override.items():
         setattr(args, k, v)
 

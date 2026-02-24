@@ -21,6 +21,8 @@ import torch
 from tqdm import tqdm
 import wandb
 
+# Initialize USE_OBS_TARGET (will be set from command-line argument in main())
+USE_OBS_TARGET = False
 
 from policy import (
     ACTPolicy,
@@ -44,6 +46,10 @@ from utils import (
 
 def main(args):
     set_seed(1)
+    # Set module-level variable for USE_OBS_TARGET (used by policy.py)
+    global USE_OBS_TARGET
+    USE_OBS_TARGET = args.get('use_obs_target', False)
+    
     # command line parameters
     is_eval = args['eval']
     ckpt_dir = args['ckpt_dir']
@@ -106,6 +112,7 @@ def main(args):
             'dec_layers': dec_layers,
             'nheads': nheads,
             'camera_names': camera_names,
+            'use_obs_target': USE_OBS_TARGET,
         }
     elif policy_class == 'CNNMLP':
         policy_config = {
@@ -175,6 +182,7 @@ def main(args):
         camera_names,
         batch_size_train,
         batch_size_val,
+        use_obs_target=USE_OBS_TARGET,
     )
 
     # save dataset stats
@@ -728,6 +736,9 @@ if __name__ == '__main__':
     parser.add_argument('--wandb_project', action='store', type=str, help='wandb project name', required=False, default='act_training')
     parser.add_argument('--wandb_entity', action='store', type=str, help='wandb entity/team name', required=False, default=None)
     parser.add_argument('--wandb_name', action='store', type=str, help='wandb run name', required=False, default=None)
+    
+    # USE_OBS_TARGET argument
+    parser.add_argument('--use_obs_target', action='store_true', help='Use observations as target instead of actions', required=False)
 
     argument = vars(parser.parse_args())
     main(argument)

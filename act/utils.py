@@ -9,12 +9,13 @@ from torch.utils.data import TensorDataset, DataLoader
 
 
 class EpisodicDataset(torch.utils.data.Dataset):
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
+    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, use_obs_target=False):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
+        self.use_obs_target = use_obs_target
         self.is_sim = None
         self.__getitem__(0) # initialize self.is_sim
 
@@ -35,8 +36,19 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 start_ts = 0
             else:
                 start_ts = np.random.choice(episode_len)
-            # get observation at start_ts only
-            qpos = root['/observations/qpos'][start_ts]
+            
+            # Load qpos: as sequence if use_obs_target, otherwise single timestep
+            if self.use_obs_target:
+                # Load qpos as a sequence (same way as actions)
+                if is_sim:
+                    qpos = root['/observations/qpos'][start_ts:]
+                else:
+                    # hack, to make timesteps more aligned
+                    qpos = root['/observations/qpos'][max(0, start_ts - 1):]
+            else:
+                # get observation at start_ts only
+                qpos = root['/observations/qpos'][start_ts]
+            
             qvel = root['/observations/qvel'][start_ts]
             # Load effort if available, otherwise use zeros with same shape as qpos
             if '/observations/effort' in root:
@@ -68,6 +80,15 @@ class EpisodicDataset(torch.utils.data.Dataset):
         padded_action[:action_len] = action
         is_pad = np.zeros(episode_len)
         is_pad[action_len:] = 1
+
+        # Pad qpos if loaded as sequence
+        if self.use_obs_target:
+            padded_qpos = np.zeros(original_action_shape, dtype=np.float32)
+            padded_qpos[:action_len] = qpos
+            qpos = padded_qpos
+        else:
+            # qpos is already a single timestep, keep as is
+            pass
 
         # new axis for different cameras
         all_cam_images = []
@@ -178,7 +199,7 @@ def find_all_hdf5(dataset_dir, skip_mirrored_data):
     return hdf5_files
 
 
-def load_data(dataset_dir, camera_names, batch_size_train, batch_size_val, skip_mirrored_data=False):
+def load_data(dataset_dir, camera_names, batch_size_train, batch_size_val, skip_mirrored_data=False, use_obs_target=False):
     print(f'\nData from: {dataset_dir}\n')
 
     # verify that the directory passed is a string
@@ -206,8 +227,8 @@ def load_data(dataset_dir, camera_names, batch_size_train, batch_size_val, skip_
     norm_stats = get_norm_stats(dataset_dir, episode_indices)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
+    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, use_obs_target=use_obs_target)
+    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, use_obs_target=use_obs_target)
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size_train,
