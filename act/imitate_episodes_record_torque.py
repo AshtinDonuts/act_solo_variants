@@ -27,6 +27,7 @@ USE_OBS_TARGET = False
 from policy import (
     ACTPolicy,
     CNNMLPPolicy,
+    ACT_IK_Policy,
 )
 # Simulation is not supported for Aloha Solo
 # TODO: Uncommenting this will result in error. Needs to be fixed
@@ -96,7 +97,7 @@ def main(args):
     state_dim = 7
     lr_backbone = 1e-5
     backbone = 'resnet18'
-    if policy_class == 'ACT':
+    if policy_class in ['ACT', 'ACT_IK']:
         enc_layers = 4
         dec_layers = 7
         nheads = 8
@@ -123,7 +124,7 @@ def main(args):
             'camera_names': camera_names,
         }
     else:
-        raise NotImplementedError("policy_class must be one of 'ACT' or 'CNNMLP'.")
+        raise NotImplementedError("policy_class must be one of 'ACT', 'ACT_IK', or 'CNNMLP'.")
 
     ##  Consolidate the all changes to the configurations above
     ##  Iow Config parameters AFTER this line is not supposed to be modified.
@@ -209,6 +210,8 @@ def make_policy(policy_class, policy_config):
         policy = ACTPolicy(policy_config)
     elif policy_class == 'CNNMLP':
         policy = CNNMLPPolicy(policy_config)
+    elif policy_class == 'ACT_IK ':
+        policy = ACT_IK_Policy(policy_config)
     else:
         raise NotImplementedError
     return policy
@@ -218,6 +221,8 @@ def make_optimizer(policy_class, policy):
     if policy_class == 'ACT':
         optimizer = policy.configure_optimizers()
     elif policy_class == 'CNNMLP':
+        optimizer = policy.configure_optimizers()
+    elif policy_class == 'ACT_IK':
         optimizer = policy.configure_optimizers()
     else:
         raise NotImplementedError
@@ -435,7 +440,7 @@ def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
                     curr_image = get_image(ts, camera_names)
 
                     ### query policy
-                    if config['policy_class'] == "ACT":
+                    if config['policy_class'] in ['ACT', 'ACT_IK']:
                         if t % query_frequency == 0:
                             all_actions = policy(qpos, curr_image)
                         if temporal_agg:
