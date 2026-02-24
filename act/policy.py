@@ -91,9 +91,10 @@ class ACT_IK_Policy(nn.Module):
     def _joints_to_task(self, qpos_tensor: torch.Tensor) -> torch.Tensor:
         """Convert joint-space qpos/actions to task-space pose vectors.
 
-        - Expects last dimension to contain at least ``num_arm_joints`` joint angles.
+        - Expects last dimension to contain at least ``num_arm_joints`` joint angles
+          followed by any extra values (e.g., gripper).
         - Uses Modern Robotics FKinSpace with (M, Slist) from Interbotix descriptions.
-        - Returns pose as [x, y, z, axis-angle_x, axis-angle_y, axis-angle_z].
+        - Returns pose as [x, y, z, axis-angle_x, axis-angle_y, axis-angle_z, *extra*].
         """
         if qpos_tensor is None:
             return None
@@ -105,11 +106,16 @@ class ACT_IK_Policy(nn.Module):
             )
 
         orig_shape = qpos_tensor.shape
+        feature_dim = orig_shape[-1]
         # Flatten all leading dims, keep feature dim
-        flat = qpos_tensor.reshape(-1, orig_shape[-1])
+        flat = qpos_tensor.reshape(-1, feature_dim)
+
+        # Split arm joints and any extra values (e.g., gripper)
+        arm_flat = flat[:, : self.num_arm_joints]
+        extra_flat = flat[:, self.num_arm_joints:]  # may be empty if no extras
 
         # Detach from graph and move to CPU for numpy-based FK
-        joints_np = flat[:, : self.num_arm_joints].detach().cpu().numpy()
+        joints_np = arm_flat.detach().cpu().numpy()
 
         task_list = []
         for joints in joints_np:
@@ -125,9 +131,18 @@ class ACT_IK_Policy(nn.Module):
             task_list.append(task_vec)
 
         task_np = np.stack(task_list, axis=0)  # (N, 6)
-        task_tensor = torch.from_numpy(task_np).to(qpos_tensor.device, dtype=qpos_tensor.dtype)
 
-        return task_tensor.view(*orig_shape[:-1], self.task_dim)
+        # Re-attach any extra dims (e.g., gripper) unchanged so output dim matches input dim
+        if extra_flat.shape[1] > 0:
+            extra_np = extra_flat.detach().cpu().numpy()
+            combined_np = np.concatenate([task_np, extra_np], axis=-1)
+        else:
+            combined_np = task_np
+
+        task_tensor = torch.from_numpy(combined_np).to(qpos_tensor.device, dtype=qpos_tensor.dtype)
+
+        new_last_dim = self.task_dim + (feature_dim - self.num_arm_joints)
+        return task_tensor.view(*orig_shape[:-1], new_last_dim)
 
     def __call__(self, qpos, image, actions=None, is_pad=None):
         env_state = None
