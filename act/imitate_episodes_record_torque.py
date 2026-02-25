@@ -6,6 +6,7 @@ import sys
 import pickle
 import cv2
 import threading
+import yaml
 
 # to avoid x11/quartz over ssh
 import matplotlib
@@ -23,16 +24,61 @@ except ImportError:
     ROS2_AVAILABLE = False
     print("Warning: ROS2 not available. Live camera overlay will use static frame.")
 
-from aloha.robot_utils import (
-    load_yaml_file,
-    FOLLOWER_GRIPPER_JOINT_OPEN
-)
+# Optional import so training-only usage does not depend on the aloha package.
+try:
+    from aloha.robot_utils import FOLLOWER_GRIPPER_JOINT_OPEN
+except ImportError:
+    FOLLOWER_GRIPPER_JOINT_OPEN = None
+
 from einops import rearrange
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from tqdm import tqdm
 import wandb
+
+def load_yaml_file(config_type: str = "robot",
+                   name: str = "aloha_stationary",
+                   base_path: str = None) -> dict:
+    """
+    Standalone YAML loader (adapted from `aloha.robot_utils.load_yaml_file`)
+    so that training does not require the `aloha` Python package.
+
+    :param config_type: Type of configuration to load, e.g., 'robot' or 'task'.
+    :param name: Name of the robot configuration to load when config_type == "robot".
+    :param base_path: Base directory containing the YAML configuration files.
+    :return: The loaded configuration as a dictionary.
+    :raises FileNotFoundError: If the specified configuration file does not exist.
+    :raises RuntimeError: If there is an error loading the YAML file.
+    """
+
+    if base_path is None:
+        raise ValueError("`base_path` must be provided for `load_yaml_file`.")
+
+    # Set the YAML file path based on the configuration type
+    if config_type == "robot":
+        yaml_file_path = os.path.join(base_path, "robot", f"{name}.yaml")
+    elif config_type == "task":
+        yaml_file_path = os.path.join(base_path, "tasks_config.yaml")
+    else:
+        raise ValueError(
+            f"Unsupported config_type '{config_type}'. Use 'robot' or 'task'."
+        )
+
+    # Check if file exists and load
+    if not os.path.exists(yaml_file_path):
+        raise FileNotFoundError(
+            f"Configuration file '{yaml_file_path}' not found."
+        )
+
+    try:
+        with open(yaml_file_path, 'r') as f:
+            return yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise RuntimeError(
+            f"Failed to load YAML file '{yaml_file_path}': {e}"
+        )
+
 
 # Initialize USE_OBS_TARGET (will be set from command-line argument in main())
 USE_OBS_TARGET = False
@@ -677,6 +723,11 @@ def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
         # Open gripper after reset completes (gripper stayed in position during reset)
         # Only do this after the first rollout (not before the first rollout)
         if real_robot and rollout_id > 0:
+            if FOLLOWER_GRIPPER_JOINT_OPEN is None:
+                raise ImportError(
+                    "FOLLOWER_GRIPPER_JOINT_OPEN is not available. "
+                    "Install the `aloha` package to run real robot rollouts."
+                )
             move_grippers(
                 env.follower_bots,
                 [FOLLOWER_GRIPPER_JOINT_OPEN],
