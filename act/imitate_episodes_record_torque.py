@@ -5,11 +5,23 @@ import re
 import sys
 import pickle
 import cv2
+import threading
 
 # to avoid x11/quartz over ssh
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+# ROS2 imports for live camera feed
+try:
+    import rclpy
+    from rclpy.node import Node
+    from cv_bridge import CvBridge
+    from sensor_msgs.msg import Image
+    ROS2_AVAILABLE = True
+except ImportError:
+    ROS2_AVAILABLE = False
+    print("Warning: ROS2 not available. Live camera overlay will use static frame.")
 
 from aloha.robot_utils import (
     load_yaml_file,
@@ -281,32 +293,55 @@ def get_latest_rollout_index(ckpt_dir):
     return max_index
 
 
-def show_overlay(camera_frame, overlay_image_path, camera_name='camera_left_shoulder', initial_opacity=0.5):
+class ImageSubscriber(Node):
+    """ROS2 node to subscribe to image_rect_raw topic."""
+    
+    def __init__(self, camera_name, image_callback):
+        super().__init__('overlay_image_subscriber')
+        self.camera_name = camera_name
+        self.image_callback = image_callback
+        self.bridge = CvBridge()
+        
+        # Subscribe to the image_rect_raw topic (same as recording script uses)
+        topic_name = f'{camera_name}/camera/color/image_rect_raw'
+        self.subscription = self.create_subscription(
+            Image,
+            topic_name,
+            self.ros_image_callback,
+            10
+        )
+        self.get_logger().info(f'Subscribed to: {topic_name}')
+    
+    def ros_image_callback(self, msg):
+        """Convert ROS Image message to OpenCV format and call callback."""
+        try:
+            # Convert ROS Image to OpenCV (BGR format)
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            self.image_callback(cv_image)
+        except Exception as e:
+            self.get_logger().error(f'Error converting image: {e}')
+
+
+def show_overlay(overlay_image_path, camera_name='camera_left_shoulder', initial_opacity=0.5):
     """
-    Display camera frame with overlay image using OpenCV.
-    Similar to realsense_overlay.py but uses live camera frame from environment.
+    Display live camera feed with overlay image using OpenCV and ROS2.
+    Similar to realsense_overlay.py - subscribes to live ROS2 camera topic.
     
     Args:
-        camera_frame: Current camera frame (numpy array, BGR format)
         overlay_image_path: Path to overlay image file (optional, if None, no overlay)
-        camera_name: Name of camera being displayed
+        camera_name: Name of camera being displayed (e.g., 'camera_left_shoulder')
         initial_opacity: Initial opacity value (0.0 to 1.0)
     
     Returns:
         None (blocks until window is closed)
     """
-    if camera_frame is None:
-        print("Warning: No camera frame available for overlay")
+    if not ROS2_AVAILABLE:
+        print("Error: ROS2 not available. Cannot display live camera overlay.")
         return
     
-    # Convert camera frame to BGR if needed (assuming it's RGB from observation)
-    if len(camera_frame.shape) == 3 and camera_frame.shape[2] == 3:
-        # Check if it's RGB (common in observations) and convert to BGR for OpenCV
-        camera_frame_bgr = cv2.cvtColor(camera_frame, cv2.COLOR_RGB2BGR)
-    else:
-        camera_frame_bgr = camera_frame
-    
     opacity = np.clip(initial_opacity, 0.0, 1.0)
+    latest_frame = None
+    frame_lock = threading.Lock()
     
     # Load overlay image if provided
     overlay_image = None
@@ -315,6 +350,24 @@ def show_overlay(camera_frame, overlay_image_path, camera_name='camera_left_shou
         if overlay_image is None:
             print(f"Warning: Could not load overlay image: {overlay_image_path}")
             overlay_image = None
+        else:
+            print(f"Loaded overlay image: {overlay_image_path}")
+            print(f"Overlay image shape: {overlay_image.shape} (H, W, C)")
+    
+    def on_image_received(cv_image):
+        """Callback when new image is received from ROS2 topic."""
+        with frame_lock:
+            nonlocal latest_frame
+            latest_frame = cv_image
+    
+    # Initialize ROS2
+    try:
+        rclpy.init()
+    except RuntimeError:
+        # ROS2 already initialized
+        pass
+    
+    image_subscriber = ImageSubscriber(camera_name, on_image_received)
     
     # Create window
     window_name = f"Overlay - {camera_name} (Press 'q' or ESC to continue)"
@@ -393,6 +446,7 @@ def show_overlay(camera_frame, overlay_image_path, camera_name='camera_left_shou
     
     print(f"\n=== Overlay Display ===")
     print(f"Camera: {camera_name}")
+    print(f"Topic: {camera_name}/camera/color/image_rect_raw")
     if overlay_image is not None:
         print(f"Overlay image: {overlay_image_path}")
         print(f"Initial opacity: {opacity:.2f}")
@@ -405,18 +459,49 @@ def show_overlay(camera_frame, overlay_image_path, camera_name='camera_left_shou
     else:
         print("No overlay image - showing camera feed only")
         print("Press 'q' or ESC to continue to rollout")
+    print("Waiting for camera frames...")
     print("========================\n")
     
+    # Start ROS2 spinning in a separate thread
+    def spin_ros():
+        rclpy.spin(image_subscriber)
+    
+    ros_thread = threading.Thread(target=spin_ros, daemon=True)
+    ros_thread.start()
+    
     try:
-        while True:
+        while rclpy.ok():
+            # Get latest frame from ROS2 subscriber
+            with frame_lock:
+                camera_frame = latest_frame
+            
+            if camera_frame is None:
+                # No frame received yet, show waiting message
+                waiting_img = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(
+                    waiting_img,
+                    "Waiting for camera frames...",
+                    (50, 240),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 0),
+                    2,
+                    cv2.LINE_AA
+                )
+                cv2.imshow(window_name, waiting_img)
+                key = cv2.waitKey(100) & 0xFF
+                if key == ord('q') or key == 27:
+                    break
+                continue
+            
             # Get current opacity from trackbar if overlay exists
             if overlay_image is not None:
                 opacity = cv2.getTrackbarPos("Opacity", window_name) / 100.0
             
             # Prepare overlay if image exists
             if overlay_image is not None:
-                overlay_canvas, alpha_mask = prepare_overlay(camera_frame_bgr.shape, overlay_image)
-                blended = blend_images(camera_frame_bgr, overlay_canvas, alpha_mask, opacity)
+                overlay_canvas, alpha_mask = prepare_overlay(camera_frame.shape, overlay_image)
+                blended = blend_images(camera_frame, overlay_canvas, alpha_mask, opacity)
                 
                 # Add text overlay showing current opacity
                 opacity_text = f"Opacity: {opacity:.2f}"
@@ -432,7 +517,7 @@ def show_overlay(camera_frame, overlay_image_path, camera_name='camera_left_shou
                 )
                 display_frame = blended
             else:
-                display_frame = camera_frame_bgr
+                display_frame = camera_frame
             
             # Display the frame
             cv2.imshow(window_name, display_frame)
@@ -459,6 +544,12 @@ def show_overlay(camera_frame, overlay_image_path, camera_name='camera_left_shou
     except KeyboardInterrupt:
         print("\nInterrupted by user")
     finally:
+        # Cleanup
+        image_subscriber.destroy_node()
+        try:
+            rclpy.shutdown()
+        except:
+            pass
         cv2.destroyAllWindows()
         print("Overlay window closed. Starting rollout...")
 
@@ -565,17 +656,12 @@ def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
             overlay_image_path = config.get('overlay_image_path', None)
             overlay_opacity = config.get('overlay_opacity', 0.5)
             
-            # Get camera image from observation
-            if 'images' in ts.observation and overlay_camera_name in ts.observation['images']:
-                camera_frame = ts.observation['images'][overlay_camera_name]
-                show_overlay(
-                    camera_frame,
-                    overlay_image_path,
-                    camera_name=overlay_camera_name,
-                    initial_opacity=overlay_opacity
-                )
-            else:
-                print(f"Warning: Camera '{overlay_camera_name}' not found in observation. Skipping overlay.")
+            # Show live camera overlay with ROS2 subscription
+            show_overlay(
+                overlay_image_path,
+                camera_name=overlay_camera_name,
+                initial_opacity=overlay_opacity
+            )
         
         # Open gripper after reset completes (gripper stayed in position during reset)
         # Only do this after the first rollout (not before the first rollout)
