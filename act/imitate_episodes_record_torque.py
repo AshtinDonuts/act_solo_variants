@@ -360,11 +360,13 @@ def show_overlay(overlay_image_path, camera_name='camera_left_shoulder', initial
             nonlocal latest_frame
             latest_frame = cv_image
     
-    # Initialize ROS2
+    # ROS2 should already be initialized by the environment
+    # Just ensure it's initialized (don't re-initialize if already done)
     try:
-        rclpy.init()
+        if not rclpy.ok():
+            rclpy.init()
     except RuntimeError:
-        # ROS2 already initialized
+        # ROS2 already initialized - this is expected
         pass
     
     image_subscriber = ImageSubscriber(camera_name, on_image_received)
@@ -463,8 +465,12 @@ def show_overlay(overlay_image_path, camera_name='camera_left_shoulder', initial
     print("========================\n")
     
     # Start ROS2 spinning in a separate thread
+    # Use a flag to signal when to stop spinning
+    stop_spinning = threading.Event()
+    
     def spin_ros():
-        rclpy.spin(image_subscriber)
+        while not stop_spinning.is_set() and rclpy.ok():
+            rclpy.spin_once(image_subscriber, timeout_sec=0.1)
     
     ros_thread = threading.Thread(target=spin_ros, daemon=True)
     ros_thread.start()
@@ -544,12 +550,17 @@ def show_overlay(overlay_image_path, camera_name='camera_left_shoulder', initial
     except KeyboardInterrupt:
         print("\nInterrupted by user")
     finally:
-        # Cleanup
-        image_subscriber.destroy_node()
+        # Signal the ROS2 spinning thread to stop
+        stop_spinning.set()
+        # Wait a bit for the thread to finish
+        ros_thread.join(timeout=1.0)
+        # Cleanup - only destroy our node, don't shutdown ROS2 context
+        # (the environment also uses ROS2 and needs it to remain active)
         try:
-            rclpy.shutdown()
+            image_subscriber.destroy_node()
         except:
             pass
+        # DO NOT call rclpy.shutdown() - the environment needs ROS2 to remain active
         cv2.destroyAllWindows()
         print("Overlay window closed. Starting rollout...")
 
