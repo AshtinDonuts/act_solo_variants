@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import pickle
+import cv2
 
 # to avoid x11/quartz over ssh
 import matplotlib
@@ -129,6 +130,17 @@ def main(args):
     ##  Consolidate the all changes to the configurations above
     ##  Iow Config parameters AFTER this line is not supposed to be modified.
 
+    # Construct default overlay image path from task name if not provided
+    overlay_image_path = args.get('overlay_image_path')
+    if overlay_image_path is None:
+        # Default pattern: /mnt/c2d9b23a-b03e-4fdb-82ad-59f039ec9e3e/khw/{task_name}/overlay.jpg
+        default_overlay_path = f'/mnt/c2d9b23a-b03e-4fdb-82ad-59f039ec9e3e/khw/{task_name}/overlay.jpg'
+        if os.path.exists(default_overlay_path):
+            overlay_image_path = default_overlay_path
+            print(f'Using default overlay image: {overlay_image_path}')
+        else:
+            print(f'Default overlay image not found at {default_overlay_path}, overlay will be disabled')
+    
     config = {
         'num_epochs': num_epochs,
         'ckpt_dir': ckpt_dir,
@@ -145,6 +157,9 @@ def main(args):
         'real_robot': not is_sim,
         'robot_config': robot_config,
         'num_rollouts': args['num_rollouts'],
+        'overlay_image_path': overlay_image_path,
+        'overlay_camera': args.get('overlay_camera', 'camera_left_shoulder'),
+        'overlay_opacity': args.get('overlay_opacity', 0.5),
     }
 
     # Initialize wandb if enabled
@@ -266,6 +281,188 @@ def get_latest_rollout_index(ckpt_dir):
     return max_index
 
 
+def show_overlay(camera_frame, overlay_image_path, camera_name='camera_left_shoulder', initial_opacity=0.5):
+    """
+    Display camera frame with overlay image using OpenCV.
+    Similar to realsense_overlay.py but uses live camera frame from environment.
+    
+    Args:
+        camera_frame: Current camera frame (numpy array, BGR format)
+        overlay_image_path: Path to overlay image file (optional, if None, no overlay)
+        camera_name: Name of camera being displayed
+        initial_opacity: Initial opacity value (0.0 to 1.0)
+    
+    Returns:
+        None (blocks until window is closed)
+    """
+    if camera_frame is None:
+        print("Warning: No camera frame available for overlay")
+        return
+    
+    # Convert camera frame to BGR if needed (assuming it's RGB from observation)
+    if len(camera_frame.shape) == 3 and camera_frame.shape[2] == 3:
+        # Check if it's RGB (common in observations) and convert to BGR for OpenCV
+        camera_frame_bgr = cv2.cvtColor(camera_frame, cv2.COLOR_RGB2BGR)
+    else:
+        camera_frame_bgr = camera_frame
+    
+    opacity = np.clip(initial_opacity, 0.0, 1.0)
+    
+    # Load overlay image if provided
+    overlay_image = None
+    if overlay_image_path and os.path.exists(overlay_image_path):
+        overlay_image = cv2.imread(overlay_image_path)
+        if overlay_image is None:
+            print(f"Warning: Could not load overlay image: {overlay_image_path}")
+            overlay_image = None
+    
+    # Create window
+    window_name = f"Overlay - {camera_name} (Press 'q' or ESC to continue)"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    
+    # Create trackbar for opacity if overlay exists
+    if overlay_image is not None:
+        cv2.createTrackbar("Opacity", window_name, int(opacity * 100), 100, lambda val: None)
+    
+    def prepare_overlay(target_shape, overlay_img):
+        """Prepare overlay image for blending."""
+        if overlay_img is None:
+            return None, None
+        
+        target_h, target_w = target_shape[:2]
+        overlay_h, overlay_w = overlay_img.shape[:2]
+        
+        # Create canvas and alpha mask
+        overlay_canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        alpha_mask = np.zeros((target_h, target_w), dtype=np.float32)
+        
+        # If dimensions match exactly, place at (0, 0) for pixel-perfect alignment
+        if overlay_h == target_h and overlay_w == target_w:
+            overlay_canvas[:, :] = overlay_img
+            alpha_mask[:, :] = 1.0
+        # Check if overlay is smaller than target
+        elif overlay_h <= target_h and overlay_w <= target_w:
+            # Center the overlay image
+            start_y = (target_h - overlay_h) // 2
+            start_x = (target_w - overlay_w) // 2
+            end_y = start_y + overlay_h
+            end_x = start_x + overlay_w
+            
+            overlay_canvas[start_y:end_y, start_x:end_x] = overlay_img
+            alpha_mask[start_y:end_y, start_x:end_x] = 1.0
+        else:
+            # Overlay is larger, resize to fit
+            scale = min(target_w / overlay_w, target_h / overlay_h)
+            new_w = int(overlay_w * scale)
+            new_h = int(overlay_h * scale)
+            
+            overlay_resized = cv2.resize(
+                overlay_img,
+                (new_w, new_h),
+                interpolation=cv2.INTER_LINEAR
+            )
+            
+            # Center the resized overlay
+            start_y = (target_h - new_h) // 2
+            start_x = (target_w - new_w) // 2
+            end_y = start_y + new_h
+            end_x = start_x + new_w
+            
+            overlay_canvas[start_y:end_y, start_x:end_x] = overlay_resized
+            alpha_mask[start_y:end_y, start_x:end_x] = 1.0
+        
+        return overlay_canvas, alpha_mask
+    
+    def blend_images(camera_frame, overlay_canvas, alpha_mask, opacity_val):
+        """Blend camera frame with overlay image."""
+        if overlay_canvas is None or alpha_mask is None:
+            return camera_frame
+        
+        # Convert to float for blending
+        camera_float = camera_frame.astype(np.float32)
+        overlay_float = overlay_canvas.astype(np.float32)
+        
+        # Expand alpha mask to 3 channels
+        alpha_3d = np.stack([alpha_mask] * 3, axis=2)
+        
+        # Blend: result = (1 - opacity * alpha) * camera + (opacity * alpha) * overlay
+        blended = (1.0 - opacity_val * alpha_3d) * camera_float + \
+                  (opacity_val * alpha_3d) * overlay_float
+        
+        return blended.astype(np.uint8)
+    
+    print(f"\n=== Overlay Display ===")
+    print(f"Camera: {camera_name}")
+    if overlay_image is not None:
+        print(f"Overlay image: {overlay_image_path}")
+        print(f"Initial opacity: {opacity:.2f}")
+        print("Controls:")
+        print("  'q' or ESC: Continue to rollout")
+        print("  '+' or '=': Increase opacity")
+        print("  '-' or '_': Decrease opacity")
+        print("  'r': Reset opacity to 0.5")
+        print("  Trackbar: Adjust opacity (0-100)")
+    else:
+        print("No overlay image - showing camera feed only")
+        print("Press 'q' or ESC to continue to rollout")
+    print("========================\n")
+    
+    try:
+        while True:
+            # Get current opacity from trackbar if overlay exists
+            if overlay_image is not None:
+                opacity = cv2.getTrackbarPos("Opacity", window_name) / 100.0
+            
+            # Prepare overlay if image exists
+            if overlay_image is not None:
+                overlay_canvas, alpha_mask = prepare_overlay(camera_frame_bgr.shape, overlay_image)
+                blended = blend_images(camera_frame_bgr, overlay_canvas, alpha_mask, opacity)
+                
+                # Add text overlay showing current opacity
+                opacity_text = f"Opacity: {opacity:.2f}"
+                cv2.putText(
+                    blended,
+                    opacity_text,
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 0),
+                    2,
+                    cv2.LINE_AA
+                )
+                display_frame = blended
+            else:
+                display_frame = camera_frame_bgr
+            
+            # Display the frame
+            cv2.imshow(window_name, display_frame)
+            
+            # Handle keyboard input
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord('q') or key == 27:  # 'q' or ESC
+                break
+            elif overlay_image is not None:
+                if key == ord('+') or key == ord('='):
+                    opacity = min(1.0, opacity + 0.05)
+                    cv2.setTrackbarPos("Opacity", window_name, int(opacity * 100))
+                    print(f"Opacity: {opacity:.2f}")
+                elif key == ord('-') or key == ord('_'):
+                    opacity = max(0.0, opacity - 0.05)
+                    cv2.setTrackbarPos("Opacity", window_name, int(opacity * 100))
+                    print(f"Opacity: {opacity:.2f}")
+                elif key == ord('r'):
+                    opacity = 0.5
+                    cv2.setTrackbarPos("Opacity", window_name, int(opacity * 100))
+                    print(f"Opacity reset to: {opacity:.2f}")
+    
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+    finally:
+        cv2.destroyAllWindows()
+        print("Overlay window closed. Starting rollout...")
+
+
 def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
     set_seed(1000)
     ckpt_dir = config['ckpt_dir']
@@ -361,6 +558,24 @@ def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
         #     BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
 
         ts = env.reset()
+        
+        # Show overlay before starting rollout (only for real robot)
+        if real_robot:
+            overlay_camera_name = config.get('overlay_camera', 'camera_left_shoulder')
+            overlay_image_path = config.get('overlay_image_path', None)
+            overlay_opacity = config.get('overlay_opacity', 0.5)
+            
+            # Get camera image from observation
+            if 'images' in ts.observation and overlay_camera_name in ts.observation['images']:
+                camera_frame = ts.observation['images'][overlay_camera_name]
+                show_overlay(
+                    camera_frame,
+                    overlay_image_path,
+                    camera_name=overlay_camera_name,
+                    initial_opacity=overlay_opacity
+                )
+            else:
+                print(f"Warning: Camera '{overlay_camera_name}' not found in observation. Skipping overlay.")
         
         # Open gripper after reset completes (gripper stayed in position during reset)
         # Only do this after the first rollout (not before the first rollout)
@@ -744,6 +959,11 @@ if __name__ == '__main__':
     
     # USE_OBS_TARGET argument
     parser.add_argument('--use_obs_target', action='store_true', help='Use observations as target instead of actions', required=False)
+    
+    # Overlay arguments
+    parser.add_argument('--overlay_image_path', action='store', type=str, help='Path to overlay image file (optional)', required=False, default=None)
+    parser.add_argument('--overlay_camera', action='store', type=str, help='Camera name for overlay display (default: camera_left_shoulder)', required=False, default='camera_left_shoulder')
+    parser.add_argument('--overlay_opacity', action='store', type=float, help='Initial opacity for overlay (0.0 to 1.0, default: 0.5)', required=False, default=0.5)
 
     argument = vars(parser.parse_args())
     main(argument)
