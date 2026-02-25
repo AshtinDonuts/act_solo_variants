@@ -105,7 +105,8 @@ def main(args):
     robot = args['robot']
 
 
-    base_path = os.path.expanduser("~/interbotix_ws/src/aloha/config")
+    # base_path = os.path.expanduser("~/interbotix_ws/src/aloha/config")
+    base_path = os.path.expanduser("~/aloha/config")
 
     robot_config = load_yaml_file("robot", robot, base_path=base_path).get('robot')
 
