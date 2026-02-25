@@ -283,7 +283,7 @@ def make_policy(policy_class, policy_config):
         policy = ACTPolicy(policy_config)
     elif policy_class == 'CNNMLP':
         policy = CNNMLPPolicy(policy_config)
-    elif policy_class == 'ACT_IK ':
+    elif policy_class == 'ACT_IK':
         policy = ACT_IK_Policy(policy_config)
     else:
         raise NotImplementedError
