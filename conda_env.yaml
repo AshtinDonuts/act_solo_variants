@@ -1,4 +1,4 @@
-name: aloha
+name: act_train
 channels:
   - pytorch
   - nvidia
@@ -23,5 +23,5 @@ dependencies:
   - rospkg=1.5.0
   - torchvision=0.15.0
   - lark
-  - numpy=2.2.6
+  - numpy=1.26.4
   - empy=3.3.4
