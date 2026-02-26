@@ -4,6 +4,7 @@ channels:
   - nvidia
   - conda-forge
 dependencies:
+  - catkin_pkg=1.1.0
   - dm_control=1.0.9
   - einops=0.6.0
   - h5py=3.8.0
@@ -15,9 +16,12 @@ dependencies:
   - pip=23.0.1
   - py-opencv=4.7.0
   - pyquaternion=0.9.9
-  - python=3.9
+  - python=3.10
   - pytorch-cuda=11.8
   - pytorch=2.0.0
   - pyyaml=6.0
   - rospkg=1.5.0
   - torchvision=0.15.0
+  - lark
+  - numpy=2.2.6
+  - empy=3.3.4
