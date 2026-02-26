@@ -42,45 +42,46 @@ python3 imitate_episodes_record_torque.py \
 
 sleep 30
 
-# TRAIN 3
-# Model: ACT Base
-# Cam Views: 2 views (right shoulder, wrist)
-python3 imitate_episodes_record_torque.py \
---task_name soap_push \
---ckpt_dir ./ckpt_dir/soap_push_2view \
---robot /home/khw/interbotix_ws/src/aloha/config/robot/aloha_solo \
---policy_class ACT \
---kl_weight 10 \
---chunk_size 100 \
---hidden_dim 512 \
---batch_size 16 \
---dim_feedforward 3200 \
---num_epochs 8000 \
---exclude_cameras camera_left_shoulder \
---lr 2e-5 --seed 0 \
-> soap_push_2view.log 2>&1
+# # TRAIN 3
+# # Model: ACT Base
+# # Cam Views: 2 views (right shoulder, wrist)
+# python3 imitate_episodes_record_torque.py \
+# --task_name soap_push \
+# --ckpt_dir ./ckpt_dir/soap_push_2view \
+# --robot /home/khw/interbotix_ws/src/aloha/config/robot/aloha_solo \
+# --policy_class ACT \
+# --kl_weight 10 \
+# --chunk_size 100 \
+# --hidden_dim 512 \
+# --batch_size 16 \
+# --dim_feedforward 3200 \
+# --num_epochs 8000 \
+# --exclude_cameras camera_left_shoulder \
+# --lr 2e-5 --seed 0 \
+# > soap_push_2view.log 2>&1
 
-sleep 30
+# sleep 30
 
-# TRAIN 4
-# Model: ACT Base - Obs joints as Target
-# Cam Views: 2 views (right shoulder, wrist)
-python3 imitate_episodes_record_torque.py \
---task_name soap_push \
---ckpt_dir ./ckpt_dir/soap_push_2view_obs_target \
---robot /home/khw/interbotix_ws/src/aloha/config/robot/aloha_solo \
---policy_class ACT \
---kl_weight 10 \
---chunk_size 100 \
---hidden_dim 512 \
---batch_size 16 \
---dim_feedforward 3200 \
---num_epochs 8000 \
---exclude_cameras camera_left_shoulder \
---lr 2e-5 --seed 0 --use_obs_target \
-> soap_push_2view_obs_target.log 2>&1
+# # TRAIN 4
+# # Model: ACT Base - Obs joints as Target
+# # Cam Views: 2 views (right shoulder, wrist)
+# python3 imitate_episodes_record_torque.py \
+# --task_name soap_push \
+# --ckpt_dir ./ckpt_dir/soap_push_2view_obs_target \
+# --robot /home/khw/interbotix_ws/src/aloha/config/robot/aloha_solo \
+# --policy_class ACT \
+# --kl_weight 10 \
+# --chunk_size 100 \
+# --hidden_dim 512 \
+# --batch_size 16 \
+# --dim_feedforward 3200 \
+# --num_epochs 8000 \
+# --exclude_cameras camera_left_shoulder \
+# --lr 2e-5 --seed 0 --use_obs_target \
+# > soap_push_2view_obs_target.log 2>&1
 
-sleep 30
+# sleep 30
+
 
 # TRAIN 5
 # Model: ACT Base

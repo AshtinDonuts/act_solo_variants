@@ -7,6 +7,7 @@ import pickle
 import cv2
 import threading
 import yaml
+import dm_env
 
 # to avoid x11/quartz over ssh
 import matplotlib
@@ -36,6 +37,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 import wandb
+import modern_robotics as mr
 
 def load_yaml_file(config_type: str = "robot",
                    name: str = "aloha_stationary",
@@ -102,6 +104,75 @@ from utils import (
     save_videos,
     set_seed,
 )
+
+
+def compute_ee_pose_from_joints(robot, joint_positions: np.ndarray):
+    """
+    Compute end-effector pose from joint positions using forward kinematics.
+
+    This mirrors the helper in
+    `/home/khw/interbotix_ws/src/aloha/scripts/other_scripts/replay_episodes_IK.py`.
+    """
+    joint_list = (
+        joint_positions.tolist()
+        if isinstance(joint_positions, np.ndarray)
+        else joint_positions
+    )
+    return mr.FKinSpace(robot.arm.robot_des.M, robot.arm.robot_des.Slist, joint_list)
+
+
+def step_env_task_space(env, action: np.ndarray, dt: float, debug: bool = False):
+    """
+    Apply an action using end-effector pose control (IK) instead of joint control.
+
+    - `action` is in the same format as `RealEnv.step`: concatenated
+      [arm_joints (N), gripper] per follower robot.
+    - For each follower:
+        * Convert desired arm joints -> EE pose via FK
+        * Call `set_ee_pose_matrix` to realize that EE pose
+        * Command gripper via `env.set_gripper_pose`
+    - Then return a `dm_env.TimeStep` built from `env.get_observation()`.
+    """
+    follower_robots = {
+        name: robot for name, robot in env.robots.items() if "follower" in name
+    }
+    if not follower_robots:
+        raise RuntimeError("No follower robots found in env for task-space control.")
+
+    state_len = int(len(action) / len(follower_robots))
+    index = 0
+
+    for name, robot in follower_robots.items():
+        bot_action = action[index : index + state_len]
+        arm_joint_positions = bot_action[:-1]
+        gripper_normalized = bot_action[-1]
+
+        # Joint -> EE pose (4x4) using FK
+        ee_pose = compute_ee_pose_from_joints(robot, arm_joint_positions)
+
+        # Set EE pose using IK on the Interbotix arm
+        robot.arm.set_ee_pose_matrix(
+            T_sd=ee_pose,
+            custom_guess=robot.arm.get_joint_commands(),
+            execute=True,
+            moving_time=dt,
+            accel_time=dt * 0.5,
+            blocking=False,
+        )
+
+        # Gripper command (normalized -> joint via env helper)
+        env.set_gripper_pose(name, gripper_normalized, debug)
+
+        index += state_len
+
+    # Build a dm_env.TimeStep consistent with RealEnv.step
+    obs = env.get_observation()
+    return dm_env.TimeStep(
+        step_type=dm_env.StepType.MID,
+        reward=env.get_reward(),
+        discount=None,
+        observation=obs,
+    )
 
 
 def main(args):
@@ -174,6 +245,11 @@ def main(args):
             'camera_names': camera_names,
             'use_obs_target': USE_OBS_TARGET,
         }
+        # When using ACT_IK, let the policy know which robot model to use for FK.
+        if policy_class == 'ACT_IK':
+            follower_arms = robot_config.get('follower_arms', [])
+            if follower_arms and 'model' in follower_arms[0]:
+                policy_config['robot_model'] = follower_arms[0]['model']
     elif policy_class == 'CNNMLP':
         policy_config = {
             'lr': args['lr'],
@@ -829,8 +905,17 @@ def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
                     target_qpos = action
 
                     ### step the environment
-                    # ts = env.step(target_qpos.astype(float).tolist())
-                    ts = env.step(target_qpos.astype(float).tolist(), debug=True)
+                    # For ACT_IK on the real robot, use task-space (EE pose) control via IK.
+                    if real_robot and policy_class == 'ACT_IK':
+                        ts = step_env_task_space(
+                            env,
+                            target_qpos.astype(float),
+                            dt=dt,
+                            debug=True,
+                        )
+                    else:
+                        # Default: joint-space control via RealEnv.step
+                        ts = env.step(target_qpos.astype(float).tolist(), debug=True)
 
                     ### for visualization
                     #  This script itself doesn't have visualization.
