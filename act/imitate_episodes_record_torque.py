@@ -6,6 +6,7 @@ import sys
 import pickle
 import cv2
 import threading
+import time
 import yaml
 import dm_env
 
@@ -175,6 +176,99 @@ def step_env_task_space(env, action: np.ndarray, dt: float, debug: bool = False)
     )
 
 
+def clear_robot_command_buffer(env, policy_class: str, num_iterations: int = 10, dt: float = 0.02):
+    """
+    Clear the ROS2 command buffer by publishing the current position multiple times.
+    
+    This flushes out any pending commands in the ROS2 queue by repeatedly publishing
+    the current joint positions as commands. This prevents commands from the previous
+    rollout from interfering with the next rollout's reset.
+    
+    Pseudo-code for clearing the buffer:
+        for _ in range(num_iterations):
+            curr_pos = get_current_joint_states()
+            publish_command(curr_pos)  # via set_ee_pose_matrix
+            time.sleep(0.01)
+    
+    Args:
+        env: The robot environment
+        policy_class: Policy class name (used for logging, but clearance works for all)
+        num_iterations: Number of times to publish current position (default: 10)
+        dt: Timestep duration for command timing (default: 0.02)
+    
+    Returns:
+        None
+    """
+    follower_robots = {
+        name: robot for name, robot in env.robots.items() if "follower" in name
+    }
+    if not follower_robots:
+        return  # No follower robots, nothing to clear
+    
+    for _ in range(num_iterations):
+        for name, robot in follower_robots.items():
+            try:
+                # Get current joint positions
+                curr_joint_positions = np.array(robot.core.joint_states.position[:6])
+                
+                # Convert current joints to EE pose and publish via set_ee_pose_matrix
+                # This works for both task-space (ACT_IK) and joint-space policies
+                # Publishing the current position multiple times flushes the ROS2 command buffer
+                curr_ee_pose = compute_ee_pose_from_joints(robot, curr_joint_positions)
+                robot.arm.set_ee_pose_matrix(
+                    T_sd=curr_ee_pose,
+                    custom_guess=curr_joint_positions,
+                    execute=True,
+                    moving_time=dt,
+                    accel_time=dt * 0.5,
+                    blocking=False,
+                )
+                
+            except Exception as e:
+                # If command fails, continue with next iteration
+                # This prevents one robot's error from stopping the clearance for others
+                pass
+        
+        # Small delay between iterations to allow commands to be processed
+        time.sleep(0.01)
+
+
+def clear_episode_buffers(env, policy, real_robot: bool, clear_cuda_cache: bool = False):
+    """
+    Clear various buffers and caches after each episode/rollout.
+    
+    This function handles clearing:
+    1. ROS2 command buffers (via clear_robot_command_buffer - called separately)
+    2. PyTorch CUDA cache (optional, can help with memory fragmentation)
+    3. Environment observation buffers (if any)
+    4. Policy internal state (ensure eval mode)
+    
+    Args:
+        env: The robot environment
+        policy: The policy model
+        real_robot: Whether running on real robot
+        clear_cuda_cache: Whether to clear PyTorch CUDA cache (default: False)
+    
+    Returns:
+        None
+    """
+    # Ensure policy is in eval mode (should already be, but double-check)
+    if policy is not None:
+        policy.eval()
+    
+    # Clear PyTorch CUDA cache if requested
+    # This can help with memory fragmentation but adds overhead
+    if clear_cuda_cache and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    # Note: ROS2 command buffer clearing is handled separately via clear_robot_command_buffer()
+    # because it needs policy_class and dt parameters
+    
+    # Environment reset should handle clearing observation buffers
+    # If env has any explicit buffer clearing methods, they would be called here
+    # For now, env.reset() is called before this function, so buffers should be cleared
+
+
 def main(args):
     set_seed(1)
     # Set module-level variable for USE_OBS_TARGET (used by policy.py)
@@ -265,15 +359,25 @@ def main(args):
     ##  Iow Config parameters AFTER this line is not supposed to be modified.
 
     # Construct default overlay image path from task name if not provided
-    overlay_image_path = args.get('overlay_image_path')
-    if overlay_image_path is None:
-        # Default pattern: /mnt/c2d9b23a-b03e-4fdb-82ad-59f039ec9e3e/khw/{task_name}/overlay.jpg
-        default_overlay_path = f'/mnt/c2d9b23a-b03e-4fdb-82ad-59f039ec9e3e/khw/{task_name}/overlay.jpg'
-        if os.path.exists(default_overlay_path):
-            overlay_image_path = default_overlay_path
-            print(f'Using default overlay image: {overlay_image_path}')
-        else:
-            print(f'Default overlay image not found at {default_overlay_path}, overlay will be disabled')
+    # Check if overlay is explicitly disabled first
+    if args.get('disable_overlay', False):
+        overlay_image_path = None
+        print('Overlay disabled via --disable_overlay flag')
+    else:
+        overlay_image_path = args.get('overlay_image_path')
+        if overlay_image_path is None:
+            # Default pattern: /mnt/c2d9b23a-b03e-4fdb-82ad-59f039ec9e3e/khw/{task_name}/overlay.jpg
+            default_overlay_path = f'/mnt/c2d9b23a-b03e-4fdb-82ad-59f039ec9e3e/khw/{task_name}/overlay.jpg'
+            if os.path.exists(default_overlay_path):
+                overlay_image_path = default_overlay_path
+                print(f'Using default overlay image: {overlay_image_path}')
+            else:
+                overlay_image_path = None  # Explicitly set to None to disable
+                print(f'Default overlay image not found at {default_overlay_path}, overlay will be disabled')
+        elif overlay_image_path == "":
+            # User explicitly passed empty string to disable overlay
+            overlay_image_path = None
+            print('Overlay disabled (empty string provided)')
     
     config = {
         'num_epochs': num_epochs,
@@ -783,12 +887,16 @@ def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
 
         ts = env.reset()
         
-        # Show overlay before starting rollout (only for real robot)
-        if real_robot:
-            overlay_camera_name = config.get('overlay_camera', 'camera_left_shoulder')
-            overlay_image_path = config.get('overlay_image_path', None)
-            overlay_opacity = config.get('overlay_opacity', 0.5)
-            
+        # Show overlay before starting rollout (only for real robot, when enabled)
+        overlay_camera_name = config.get('overlay_camera', 'camera_left_shoulder')
+        overlay_image_path = config.get('overlay_image_path', None)
+        overlay_opacity = config.get('overlay_opacity', 0.5)
+        
+        # Only display overlay if an overlay image path is provided and truthy.
+        # This allows disabling overlay entirely by:
+        #   - ensuring no default overlay image exists, or
+        #   - passing an empty string via --overlay_image_path "".
+        if real_robot and overlay_image_path:
             # Show live camera overlay with ROS2 subscription
             show_overlay(
                 overlay_image_path,
@@ -810,6 +918,30 @@ def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
                 moving_time=0.5,
                 dt=dt,
             )
+
+            # ------------------------------------------------------------------
+            # "Zero Command" buffer:
+            # Before starting ACT inference on subsequent rollouts, publish the
+            # robot's current observed state as its target state for a few
+            # cycles. This primes the low-level controller buffer with the
+            # actual position and prevents a large initial error
+            #   Error = Target - Current.
+            # ------------------------------------------------------------------
+            num_zero_cycles = 5
+            for _ in range(num_zero_cycles):
+                obs_zero = ts.observation
+                qpos_curr = np.array(obs_zero['qpos'])
+                if policy_class == 'ACT_IK':
+                    # Use task-space stepping helper for ACT_IK
+                    ts = step_env_task_space(
+                        env,
+                        qpos_curr.astype(float),
+                        dt=dt,
+                        debug=True,
+                    )
+                else:
+                    # Default joint-space stepping
+                    ts = env.step(qpos_curr.astype(float).tolist(), debug=True)
 
         ### onscreen render
         if onscreen_render:
@@ -974,6 +1106,14 @@ def eval_bc(config, ckpt_name, save_episode=True, use_wandb=False):
                         'dither_speeds': dither_speeds_list,
                         'no_load_currents': no_load_currents_list,
                     }, f)
+        
+        # Clear buffers before starting next rollout
+        # This prevents pending commands and state from interfering with the next rollout's reset
+        if real_robot and rollout_offset < num_rollouts - 1:  # Don't clear after the last rollout
+            # Clear ROS2 command buffer by publishing current position multiple times
+            clear_robot_command_buffer(env, policy_class, num_iterations=10, dt=dt)
+            # Clear other episode buffers (CUDA cache, policy state, etc.)
+            clear_episode_buffers(env, policy, real_robot, clear_cuda_cache=False)
 
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
     avg_return = np.mean(episode_returns)
@@ -1194,7 +1334,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_obs_target', action='store_true', help='Use observations as target instead of actions', required=False)
     
     # Overlay arguments
-    parser.add_argument('--overlay_image_path', action='store', type=str, help='Path to overlay image file (optional)', required=False, default=None)
+    parser.add_argument('--overlay_image_path', action='store', type=str, help='Path to overlay image file (optional). Pass empty string "" or use --disable_overlay to disable.', required=False, default=None)
+    parser.add_argument('--disable_overlay', action='store_true', help='Explicitly disable overlay display', required=False)
     parser.add_argument('--overlay_camera', action='store', type=str, help='Camera name for overlay display (default: camera_left_shoulder)', required=False, default='camera_left_shoulder')
     parser.add_argument('--overlay_opacity', action='store', type=float, help='Initial opacity for overlay (0.0 to 1.0, default: 0.5)', required=False, default=0.5)
 
